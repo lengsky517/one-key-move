@@ -1,0 +1,21 @@
+# 构建与测试产物
+dist/
+out/
+tests/build/
+tests/_tmp/
+*.exe
+*.dll
+*.pdb
+
+# 打包
+*.zip
+
+# IDE / 临时
+.vs/
+bin/
+obj/
+*.user
+*.suo
+*.log
+Thumbs.db
+desktop.ini
