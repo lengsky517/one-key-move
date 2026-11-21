@@ -34,6 +34,9 @@ namespace YijianNuodong.UI
         private bool _scanning;
         private Thread _scanThread;
         private int _sizeVersion;
+        private Thread _sizeScanThread;
+        private int _sizeScanVersion;
+        private volatile bool _sizeScanActive;
         private long _scanElapsedMs = -1;
         private bool _scanFailed;
         private string _scanErrorText = string.Empty;
@@ -657,7 +660,9 @@ namespace YijianNuodong.UI
                     item.SubItems.Add(string.IsNullOrEmpty(program.Version) ? "—" : program.Version);
                     item.SubItems.Add(string.IsNullOrEmpty(program.Publisher) ? "—" : program.Publisher);
                     item.SubItems.Add(string.IsNullOrEmpty(program.InstallPath) ? "—" : program.InstallPath);
-                    item.SubItems.Add(program.SizeBytes >= 0 ? TextUtil.FormatBytes(program.SizeBytes) : "未知");
+                    item.SubItems.Add(program.SizeBytes >= 0
+                        ? TextUtil.FormatBytes(program.SizeBytes)
+                        : (string.IsNullOrEmpty(program.InstallPath) ? "未知" : "计算中…"));
                     item.SubItems.Add(SourceText(program.Source));
                     item.ImageIndex = program.IsOnSystemDrive ? 0 : 1;
                     item.Tag = program;
@@ -669,6 +674,7 @@ namespace YijianNuodong.UI
                 _programList.EndUpdate();
             }
             AdjustProgramColumns();
+            StartBackgroundSizeScan();
 
             bool empty = _programList.Items.Count == 0;
             if (empty)
@@ -777,7 +783,7 @@ namespace YijianNuodong.UI
                 catch { }
                 try
                 {
-                    if (size < 0)
+                    if (size < 0 && !_sizeScanActive)
                     {
                         size = FileUtil.GetDirectorySize(program.InstallPath,
                             delegate { return _formClosing || version != _sizeVersion; });
@@ -802,6 +808,98 @@ namespace YijianNuodong.UI
             });
             worker.IsBackground = true;
             worker.Start();
+        }
+
+        // ---------------------------------------------------------------------
+        // 占用大小后台统计
+        // 列表刚出现时只有注册表登记的估算大小，没登记的显示「计算中…」，
+        // 由下面这个低优先级线程逐个目录统计，统计完就地刷新那一行，
+        // 用户不需要点选才能看到真实占用。
+        // ---------------------------------------------------------------------
+        private void StartBackgroundSizeScan()
+        {
+            CancelBackgroundSizeScan();
+
+            List<InstalledProgram> targets = new List<InstalledProgram>();
+            for (int i = 0; i < _visiblePrograms.Count; i++)
+            {
+                InstalledProgram program = _visiblePrograms[i];
+                if (program == null || program.SizeBytes >= 0) continue;
+                if (string.IsNullOrEmpty(program.InstallPath)) continue;
+                targets.Add(program);
+            }
+            if (targets.Count == 0) return;
+
+            int version = _sizeScanVersion;
+            for (int i = 0; i < targets.Count; i++)
+            {
+                SetProgramRowSizeText(targets[i], "计算中…");
+            }
+
+            _sizeScanActive = true;
+            Thread worker = new Thread(delegate()
+            {
+                try
+                {
+                    for (int i = 0; i < targets.Count; i++)
+                    {
+                        if (_formClosing || version != _sizeScanVersion) return;
+                        InstalledProgram program = targets[i];
+                        long size = -1;
+                        try
+                        {
+                            size = FileUtil.GetDirectorySize(program.InstallPath,
+                                delegate { return _formClosing || version != _sizeScanVersion; });
+                        }
+                        catch { }
+                        if (size < 0) continue;
+
+                        InstalledProgram item = program;
+                        long value = size;
+                        SafeUi(delegate
+                        {
+                            if (_formClosing || version != _sizeScanVersion) return;
+                            if (item.SizeBytes < 0) item.SizeBytes = value;
+                            SetProgramRowSizeText(item, TextUtil.FormatBytes(item.SizeBytes));
+                            if (ReferenceEquals(_selectedProgram, item) && _currentStep == 2)
+                            {
+                                UpdatePage2Size();
+                            }
+                        });
+                    }
+                }
+                finally
+                {
+                    SafeUi(delegate
+                    {
+                        if (version != _sizeScanVersion) return;
+                        _sizeScanActive = false;
+                        _sizeScanThread = null;
+                    });
+                }
+            });
+            worker.IsBackground = true;
+            worker.Priority = ThreadPriority.BelowNormal;
+            _sizeScanThread = worker;
+            worker.Start();
+        }
+
+        private void CancelBackgroundSizeScan()
+        {
+            _sizeScanVersion++;
+            _sizeScanActive = false;
+            _sizeScanThread = null;
+        }
+
+        private void SetProgramRowSizeText(InstalledProgram program, string text)
+        {
+            if (_programList == null || program == null) return;
+            for (int i = 0; i < _programList.Items.Count; i++)
+            {
+                if (!ReferenceEquals(_programList.Items[i].Tag, program)) continue;
+                _programList.Items[i].SubItems[4].Text = text;
+                return;
+            }
         }
 
         private void UpdateProgramRowSize(InstalledProgram program)

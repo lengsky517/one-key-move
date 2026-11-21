@@ -172,6 +172,7 @@ namespace YijianNuodong.UI
             catch { }
 
             _formClosing = true;
+            CancelBackgroundSizeScan();
             try
             {
                 if (WindowState == FormWindowState.Normal)

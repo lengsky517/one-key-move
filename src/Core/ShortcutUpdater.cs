@@ -384,6 +384,7 @@ namespace YijianNuodong.Core
                     continue;
                 }
 
+
                 // 只处理“目标落在旧路径下”的快捷方式
                 if (!PathUtil.SamePath(target, oldDirectory) && !PathUtil.IsSubPathOf(target, oldDirectory))
                 {

@@ -1,4 +1,4 @@
-﻿// ============================================================================
+// ============================================================================
 //  一键挪动 - 纯逻辑自检（由 tests\run-tests.ps1 通过反射调用 RunAll）
 //  仅依赖 Contracts/Utils 与各 Core 模块的公共 API，可在无界面、无管理员权限下运行。
 // ============================================================================
@@ -412,7 +412,8 @@ namespace YijianNuodong.SelfTest
                         if (!PathUtil.SamePath(info.TargetPath, target2)) throw new Exception("批量更新后目标未改变：" + info.TargetPath);
                     });
 
-                    Run("确保桌面快捷方式(EnsureDesktopShortcut)", delegate
+                    // 复用语义：桌面已有指向新位置的有效快捷方式时，应直接复用，而不是再建一个。
+                    Run("复用已有桌面快捷方式(EnsureDesktopShortcut)", delegate
                     {
                         InstalledProgram p = new InstalledProgram();
                         p.DisplayName = "一键挪动自检程序";
@@ -421,15 +422,50 @@ namespace YijianNuodong.SelfTest
                         string shortcutPath;
                         string error;
                         if (!ShortcutUpdater.EnsureDesktopShortcut(p, dir, out shortcutPath, out error))
-                            throw new Exception("创建失败：" + error);
-                        if (string.IsNullOrEmpty(shortcutPath) || !File.Exists(shortcutPath))
-                            throw new Exception("快捷方式文件不存在：" + shortcutPath);
-                        ShortcutInfo info;
-                        if (!ShortcutResolver.TryResolve(shortcutPath, out info, out error))
-                            throw new Exception("新建快捷方式解析失败：" + error);
-                        if (!PathUtil.SamePath(info.TargetPath, target2))
-                            throw new Exception("新建快捷方式目标不正确：" + info.TargetPath);
-                        try { File.Delete(shortcutPath); } catch { }
+                            throw new Exception("复用失败：" + error);
+                        if (!PathUtil.SamePath(shortcutPath, desktopLnk))
+                            throw new Exception("没有复用已存在的桌面快捷方式，返回：" + shortcutPath);
+                        if (!File.Exists(desktopLnk))
+                            throw new Exception("复用过程中把有效快捷方式删掉了");
+                    });
+
+                    Run("确保桌面快捷方式(EnsureDesktopShortcut)", delegate
+                    {
+                        // 用独立目录，避免命中「复用已存在快捷方式」分支
+                        // （命中复用分支时返回的是用户桌面上的快捷方式，测试若删掉它就等于误删）
+                        string createDir = Path.Combine(Environment.CurrentDirectory, "tests", "_tmp",
+                            "shortcut_create_" + Guid.NewGuid().ToString("N"));
+                        string created = null;
+                        try
+                        {
+                            Directory.CreateDirectory(createDir);
+                            string exe = Path.Combine(createDir, "自检程序X.exe");
+                            File.Copy(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows),
+                                "System32", "notepad.exe"), exe, true);
+                            InstalledProgram p = new InstalledProgram();
+                            p.DisplayName = "一键挪动自检程序";
+                            p.InstallPath = createDir;
+                            p.ExecutablePath = exe;
+                            string shortcutPath;
+                            string error;
+                            if (!ShortcutUpdater.EnsureDesktopShortcut(p, createDir, out shortcutPath, out error))
+                                throw new Exception("创建失败：" + error);
+                            created = shortcutPath;
+                            if (string.IsNullOrEmpty(shortcutPath) || !File.Exists(shortcutPath))
+                                throw new Exception("快捷方式文件不存在：" + shortcutPath);
+                            ShortcutInfo info;
+                            if (!ShortcutResolver.TryResolve(shortcutPath, out info, out error))
+                                throw new Exception("新建快捷方式解析失败：" + error);
+                            if (!PathUtil.SamePath(info.TargetPath, exe))
+                                throw new Exception("新建快捷方式目标不正确：" + info.TargetPath);
+                            if (PathUtil.SamePath(shortcutPath, desktopLnk))
+                                throw new Exception("错误地复用了别的快捷方式：" + shortcutPath);
+                        }
+                        finally
+                        {
+                            try { if (!string.IsNullOrEmpty(created) && File.Exists(created)) File.Delete(created); } catch { }
+                            try { Directory.Delete(createDir, true); } catch { }
+                        }
                     });
 
                     Run("清理失效快捷方式(RemoveDanglingShortcuts)", delegate
