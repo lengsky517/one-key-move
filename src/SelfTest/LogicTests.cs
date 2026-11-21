@@ -1,4 +1,4 @@
-// ============================================================================
+﻿// ============================================================================
 //  一键挪动 - 纯逻辑自检（由 tests\run-tests.ps1 通过反射调用 RunAll）
 //  仅依赖 Contracts/Utils 与各 Core 模块的公共 API，可在无界面、无管理员权限下运行。
 // ============================================================================
@@ -55,6 +55,9 @@ namespace YijianNuodong.SelfTest
 
             Group("用户设置 AppSettings");
             TestSettings();
+
+            Group("卸载 Uninstall");
+            TestUninstall();
 
             StringBuilder sb = new StringBuilder();
             sb.AppendLine("========== 一键挪动 逻辑自检报告 ==========");
@@ -377,7 +380,7 @@ namespace YijianNuodong.SelfTest
 
                 if (!desktopShortcutReady)
                 {
-                    // 受限环境（如禁止写桌面）下应该安全降级，而不是抛异常：
+                    // 桌面目录不可写时（企业策略 / 重定向 / 只读桌面），应该安全降级：
                     // 返回 false + 中文错误，不能抛异常、不能崩溃。真机上桌面可写时会走创建分支。
                     Run("桌面不可写时安全降级(EnsureDesktopShortcut)", delegate
                     {
@@ -586,6 +589,102 @@ namespace YijianNuodong.SelfTest
                 catch { }
                 try { Directory.Delete(baseDir, true); } catch { }
             }
+        }
+
+        private static void TestUninstall()
+        {
+            Run("卸载支持判定", delegate
+            {
+                if (UninstallEngine.IsUninstallSupported(null)) throw new Exception("空程序不应支持卸载");
+                InstalledProgram blank = new InstalledProgram();
+                blank.DisplayName = "无安装路径的程序";
+                if (UninstallEngine.IsUninstallSupported(blank)) throw new Exception("没有安装目录的程序不应支持卸载");
+                InstalledProgram ok = new InstalledProgram();
+                ok.DisplayName = "有安装路径的程序";
+                ok.InstallPath = Path.GetTempPath();
+                if (!UninstallEngine.IsUninstallSupported(ok)) throw new Exception("有安装目录的程序应当支持卸载");
+            });
+
+            Run("卸载预检：系统目录保护", delegate
+            {
+                InstalledProgram win = new InstalledProgram();
+                win.DisplayName = "Windows 系统目录";
+                win.InstallPath = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+                UninstallTarget pw = UninstallEngine.Precheck(win);
+                if (!pw.IsProtected) throw new Exception("Windows 目录应判为受保护");
+                if (pw.CanProceed) throw new Exception("受保护目标不应可执行");
+                if (string.IsNullOrEmpty(pw.ProtectedReason)) throw new Exception("缺少保护原因说明");
+                if (pw.FileCount != 0) throw new Exception("受保护目标不应再做体积扫描（提前返回）");
+
+                InstalledProgram root = new InstalledProgram();
+                root.DisplayName = "盘符根目录";
+                root.InstallPath = Path.GetPathRoot(Environment.GetFolderPath(Environment.SpecialFolder.Windows));
+                UninstallTarget pr = UninstallEngine.Precheck(root);
+                if (!pr.IsProtected) throw new Exception("盘符根目录应判为受保护");
+                if (pr.CanProceed) throw new Exception("盘符根目录不应可执行");
+            });
+
+            string baseDir = Path.Combine(Path.GetTempPath(), "okm_selftest_uninstall_" + Guid.NewGuid().ToString("N"));
+            string fake = Path.Combine(baseDir, "fakeapp");
+            try
+            {
+                Directory.CreateDirectory(fake);
+                File.WriteAllText(Path.Combine(fake, "fakeapp.exe"), "MZ-selftest");
+
+                InstalledProgram portable = new InstalledProgram();
+                portable.DisplayName = "自检便携程序";
+                portable.InstallPath = fake;
+
+                UninstallTarget target = UninstallEngine.Precheck(portable);
+                Run("卸载预检：便携程序", delegate
+                {
+                    if (target.IsProtected) throw new Exception("临时目录不应被判为受保护");
+                    if (target.Method != UninstallMethod.ManualOnly) throw new Exception("没有卸载命令应判为手工清理，实际 " + target.Method);
+                    if (target.RequiresAdmin) throw new Exception("临时目录不应要求管理员");
+                    if (target.FileCount != 1) throw new Exception("文件数应为 1，实际 " + target.FileCount);
+                    if (target.InstallBytes <= 0) throw new Exception("体积应大于 0");
+                    if (target.Steps.Count == 0) throw new Exception("步骤说明不应为空");
+                });
+
+                Run("卸载拒绝未确认的手工删除", delegate
+                {
+                    UninstallRequest request = new UninstallRequest();
+                    request.Target = target;
+                    UninstallResult result = UninstallEngine.Execute(request, null, null);
+                    if (result == null) throw new Exception("没有返回结果");
+                    if (result.Success) throw new Exception("未勾选确认时不应删除任何文件");
+                    if (string.IsNullOrEmpty(result.ErrorMessage)) throw new Exception("应给出拒绝原因");
+                    if (!Directory.Exists(fake)) throw new Exception("未勾选确认时目录被删除了");
+                });
+
+                Run("卸载手工清理：确认后删除目录", delegate
+                {
+                    UninstallRequest request = new UninstallRequest();
+                    request.Target = target;
+                    request.ConfirmManualDelete = true;
+                    request.CreateRestorePoint = false;
+                    request.BackupRegistry = false;
+                    UninstallResult result = UninstallEngine.Execute(request, null, null);
+                    if (result == null) throw new Exception("没有返回结果");
+                    if (!result.Success) throw new Exception("应成功：" + result.ErrorMessage + " | " + result.Summary);
+                    if (Directory.Exists(fake)) throw new Exception("目录仍然存在");
+                    if (result.FreedBytes <= 0) throw new Exception("释放空间应大于 0，实际 " + result.FreedBytes);
+                });
+            }
+            finally
+            {
+                try { if (Directory.Exists(baseDir)) Directory.Delete(baseDir, true); } catch { }
+            }
+
+            Run("卸载注册表枚举不抛异常", delegate
+            {
+                InstalledProgram probe = new InstalledProgram();
+                probe.DisplayName = "不存在的软件名字 0x" + Guid.NewGuid().ToString("N");
+                probe.InstallPath = Path.Combine(Path.GetTempPath(), "okm_never_exists");
+                List<UninstallRegistryEntry> entries = UninstallEngine.FindRegistryEntries(probe);
+                if (entries == null) throw new Exception("应返回空列表而不是 null");
+                if (entries.Count != 0) throw new Exception("不存在的软件不应匹配到卸载项，实际 " + entries.Count);
+            });
         }
 
         private static void TestSettings()

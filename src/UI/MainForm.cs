@@ -33,6 +33,10 @@ namespace YijianNuodong.UI
         private PrecheckResult _precheck;
         private volatile bool _moveRunning;
 
+        // 卸载入口（Page1 的按钮与列表右键菜单共用）
+        private Ctl.FlatButton _uninstallButton;
+        private ToolStripMenuItem _uninstallMenuItem;
+
         public MainForm() : this(null) { }
 
         public MainForm(string initialPath)

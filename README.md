@@ -1,10 +1,10 @@
 # 一键挪动（One Key Move）
 
-> 把装在 C 盘、又不敢乱动的软件，一次搬到别的盘。搬完桌面快捷方式照常能用。
+> 把装在 C 盘、又不敢乱动的软件，一次搬到别的盘。搬完桌面快捷方式照常能用；用不上的软件，也可以在同一个窗口里直接卸载。
 
-**一键挪动** 是一个 Windows 10 / 11 上的绿色小工具（单文件 exe，约 320 KB）。它把误装到 C 盘的软件整体迁移到 D/E 盘，同时自动处理快捷方式、注册表路径、被占用的进程，并在原位置留下一个「目录联接」——所以即使某些软件不认路径变化，也能继续正常运行。
+**一键挪动** 是一个 Windows 10 / 11 上的绿色小工具（单文件 exe，约 400 KB）。它把误装到 C 盘的软件整体迁移到 D/E 盘，同时自动处理快捷方式、注册表路径、被占用的进程，并在原位置留下一个「目录联接」——所以即使某些软件不认路径变化，也能继续正常运行。v1.1.0 起还能一键**卸载**不再需要的软件。
 
-*English: One Key Move is a small Windows utility (single .exe, no installer) that relocates programs installed on the C: drive to another disk, updates shortcuts and registry paths, handles locked files, and leaves a junction behind so existing paths keep working. Undo is one click.*
+*English: One Key Move is a small Windows utility (single .exe, no installer) that relocates programs installed on the C: drive to another disk, updates shortcuts and registry paths, handles locked files, and leaves a junction behind so existing paths keep working. Undo is one click. Since v1.1.0 it can also uninstall programs you no longer need.*
 
 ---
 
@@ -17,6 +17,10 @@
 | 第 3 步 · 搬移进度 | 搬移成功 |
 | --- | --- |
 | ![进度](docs/screenshots/03-step3-progress.png) | ![成功](docs/screenshots/04-step3-success.png) |
+
+| 卸载 · 确认 | 卸载 · 进度 | 卸载 · 结果 |
+| --- | --- | --- |
+| ![确认](docs/screenshots/uninstall-1-confirm.png) | ![进度](docs/screenshots/uninstall-2-progress.png) | ![结果](docs/screenshots/uninstall-3-result.png) |
 
 
 更多截图在 [`docs/screenshots`](docs/screenshots)。
@@ -48,6 +52,7 @@
 - **被占用也能搬**：检测占用进程与服务，可结束进程后继续；系统关键进程会被保护；无法立即结束的服务可安排「重启后自动完成」。
 - **安全兜底**：预检目标磁盘空间、禁止把程序搬进自己目录内部、系统关键目录拒绝搬移、失败自动回滚、可撤销。
 - **中文界面**：三步向导，自绘控件，支持高 DPI，窗口可缩放。
+- **顺手卸载（v1.1.0）**：列表底部「卸载这个软件」或右键菜单即可卸载。注册表多路扫描找官方卸载命令（MSI 走 `msiexec /X`，普通程序走自带的 uninstall.exe），先导出注册表备份、可选系统还原点，再结束占用进程、运行卸载器、清理残留目录与快捷方式。系统组件一律拒绝卸载；没有官方卸载程序的绿色软件必须显式勾选「我确认手工清理」。
 - **日志**：`%ProgramData%\YijianNuodong\logs\` 下按天记录运行日志；失败时额外生成一份诊断文件，附上环境、阶段、错误、占用信息与最近日志。
 
 ---
@@ -72,6 +77,20 @@
 5. 第 3 步：等待完成；成功后桌面快捷方式会被重建，原位置保留目录联接，可点「打开新位置」或「撤销这次搬移」。
 
 详细说明见打包内的 `使用说明.md`（`docs/` 下另有架构与测试说明）。
+
+### 顺手卸载（v1.1.0）
+
+确定不再需要的软件，不用搬 —— 选中后点右下角「卸载这个软件」（或右键菜单）：
+
+1. **确认页**：看安装位置、占用空间、卸载方式（MSI / 官方卸载程序 / 手工清理）与将被清理的目录、快捷方式、注册表项、用户数据目录数量；
+2. 点「开始卸载」，进度页依次执行：备份注册表卸载项 → 结束占用进程 → 运行官方卸载程序 → 校验 → 清理残留；
+3. **结果页**给出释放空间、删除项与残留项，失败可点「查看失败诊断日志」。
+
+安全阀：
+- **不可撤销**，但会先建系统还原点、并把注册表卸载项导出到 `%ProgramData%\YijianNuodong\logs\uninstall_backup\`（附 `如何恢复.txt`）；
+- 系统目录 / 系统组件 / 盘符根 / 本程序自身目录**拒绝卸载**；
+- 同一父目录下还有别的软件时只删它自己的子目录；
+- 没有官方卸载程序的绿色软件，必须勾选「**我确认手工清理**」才执行。
 
 ---
 
@@ -104,6 +123,7 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1 -Target exe
 - 构建脚本调用 `C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe`（C# 5 语法），校验清单、图标、版本信息：`tools\verify-build.ps1`。
 - 运行逻辑自检：`powershell -ExecutionPolicy Bypass -STA -File tests\run-tests.ps1`。
 - 运行端到端搬家回归（在临时目录造假程序，真实跨盘搬家 → 校验 → 撤销）：`powershell -ExecutionPolicy Bypass -STA -File tests\e2e-move.ps1`。需要第二个固定磁盘；没有时会退化为同盘并打 SKIP。
+- 运行端到端卸载回归（造假程序 → 未确认必须拒绝 → 确认后真删 → 校验释放空间与记录）：`powershell -ExecutionPolicy Bypass -File tests\e2e-uninstall.ps1 -AssemblyPath out\OneKeyMove.preview.dll`。
 - 生成发布包：`tools\package.ps1`（输出 `out\一键挪动\` 与 zip）。
 - 界面预览渲染（无需显示器）：`tools\render-ui.ps1`，产物写到 `docs/screenshots\`。
 

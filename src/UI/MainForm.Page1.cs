@@ -201,8 +201,24 @@ namespace YijianNuodong.UI
             _programList.SelectedIndexChanged += delegate { OnProgramSelectionChanged(); };
             _programList.DoubleClick += delegate { OnProgramActivated(); };
             _programList.KeyDown += ProgramList_KeyDown;
+            _programList.MouseDown += ProgramList_MouseDown;
             _programList.Resize += delegate { AdjustProgramColumns(); };
             Theme.EnableDoubleBuffer(_programList);
+
+            // 右键菜单：卸载这个软件
+            ContextMenuStrip menu = new ContextMenuStrip();
+            menu.Font = Theme.Body;
+            menu.BackColor = Theme.Surface;
+            menu.ShowImageMargin = false;
+            menu.ShowCheckMargin = false;
+            menu.Opening += delegate { UpdateUninstallMenuState(); };
+            _uninstallMenuItem = new ToolStripMenuItem("卸载这个软件");
+            _uninstallMenuItem.Font = Theme.Body;
+            _uninstallMenuItem.Enabled = false;
+            _uninstallMenuItem.Click += delegate { UninstallSelectedProgram(); };
+            menu.Items.Add(_uninstallMenuItem);
+            _programList.ContextMenuStrip = menu;
+
             _listHost.Controls.Add(_programList);
 
             _emptyLabel = new Label();
@@ -219,10 +235,11 @@ namespace YijianNuodong.UI
             TableLayoutPanel bottom = new TableLayoutPanel();
             bottom.Dock = DockStyle.Fill;
             bottom.Margin = new Padding(0);
-            bottom.ColumnCount = 2;
+            bottom.ColumnCount = 3;
             bottom.RowCount = 1;
             bottom.BackColor = Theme.Surface;
             bottom.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            bottom.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120));
             bottom.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 196));
             bottom.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
@@ -231,6 +248,17 @@ namespace YijianNuodong.UI
             _selectionSummary.Margin = new Padding(0, 4, 0, 4);
             _selectionSummary.BackColor = Theme.Surface;
             bottom.Controls.Add(_selectionSummary, 0, 0);
+
+            _uninstallButton = new Ctl.FlatButton();
+            _uninstallButton.Text = "卸载这个软件";
+            _uninstallButton.Style = Ctl.FlatButtonStyle.Secondary;
+            _uninstallButton.Font = Theme.BodyBold;
+            _uninstallButton.Dock = DockStyle.Fill;
+            _uninstallButton.Margin = new Padding(8, 12, 0, 12);
+            _uninstallButton.BackdropColor = Theme.Surface;
+            _uninstallButton.Enabled = false;
+            _uninstallButton.Click += delegate { UninstallSelectedProgram(); };
+            bottom.Controls.Add(_uninstallButton, 1, 0);
 
             _nextButton = new Ctl.FlatButton();
             _nextButton.Text = "下一步：选择位置 →";
@@ -241,7 +269,7 @@ namespace YijianNuodong.UI
             _nextButton.BackdropColor = Theme.Surface;
             _nextButton.Enabled = false;
             _nextButton.Click += delegate { GoToStep2(); };
-            bottom.Controls.Add(_nextButton, 1, 0);
+            bottom.Controls.Add(_nextButton, 2, 0);
             layout.Controls.Add(bottom, 0, 8);
 
             _page1.Controls.Add(layout);
@@ -794,6 +822,70 @@ namespace YijianNuodong.UI
         {
             if (_nextButton == null) return;
             _nextButton.Enabled = _selectedProgram != null;
+
+            if (_uninstallButton != null)
+            {
+                _uninstallButton.Enabled = _selectedProgram != null &&
+                                          UninstallEngine.IsUninstallSupported(_selectedProgram);
+            }
+            if (_uninstallMenuItem != null)
+            {
+                _uninstallMenuItem.Enabled = _selectedProgram != null &&
+                                             UninstallEngine.IsUninstallSupported(_selectedProgram);
+            }
+        }
+
+        // ------------------------------------------------------------------
+        // 卸载入口：底部按钮与列表右键菜单共用
+        // ------------------------------------------------------------------
+
+        private void UninstallSelectedProgram()
+        {
+            InstalledProgram program = _selectedProgram;
+            if (program == null) return;
+            if (_moveRunning) return;
+
+            UninstallResult result = UninstallDialog.ShowUninstall(this, program);
+            if (result == null) return;
+
+            string name = string.IsNullOrEmpty(result.DisplayName) ? program.DisplayName : result.DisplayName;
+            string summary;
+            if (result.Success)
+            {
+                summary = "已卸载 " + name;
+                if (result.FreedBytes > 0) summary += "，释放 " + TextUtil.FormatBytes(result.FreedBytes);
+            }
+            else if (result.PartialSuccess)
+            {
+                summary = "已卸载 " + name + "，但还有残留需要手工清理";
+            }
+            else
+            {
+                summary = "卸载 " + name + " 没有完成";
+            }
+
+            _selectedProgram = null;
+            if (_selectionSummary != null) _selectionSummary.SetProgram(null, null);
+            UpdateNextButtonState();
+
+            StartScan();
+            SetStatusText(summary, result.Success ? Theme.TextSecondary : Theme.Warning);
+        }
+
+        private void ProgramList_MouseDown(object sender, MouseEventArgs e)
+        {
+            if (e.Button != MouseButtons.Right) return;
+            ListViewItem item = _programList.GetItemAt(e.X, e.Y);
+            if (item != null && !item.Selected) item.Selected = true;
+        }
+
+        private void UpdateUninstallMenuState()
+        {
+            if (_uninstallMenuItem == null) return;
+            bool enabled = _selectedProgram != null &&
+                           !_moveRunning &&
+                           UninstallEngine.IsUninstallSupported(_selectedProgram);
+            _uninstallMenuItem.Enabled = enabled;
         }
 
         private void ClearSearchPlaceholder()

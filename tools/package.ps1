@@ -22,7 +22,9 @@ New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $OutDir '界面预览') | Out-Null
 
 Copy-Item $exe (Join-Path $OutDir '一键挪动.exe') -Force
-Copy-Item (Join-Path $root 'README.md') (Join-Path $OutDir '使用说明.md') -Force
+$manual = Join-Path $root 'docs\使用说明.md'
+if (-not (Test-Path $manual)) { $manual = Join-Path $root 'README.md' }
+Copy-Item $manual (Join-Path $OutDir '使用说明.md') -Force
 
 # 首次运行辅助脚本（解除网络来源锁定 / 加入安全中心排除项 / 启动）
 $helperPs1 = Join-Path $root 'resources\first-run.ps1'
@@ -32,6 +34,7 @@ if (Test-Path $helperCmd) { Copy-Item $helperCmd (Join-Path $OutDir '首次运�
 
 # 界面截图
 $uiDir = Join-Path $root 'docs\ui'
+if (-not (Test-Path $uiDir)) { $uiDir = Join-Path $root 'docs\screenshots' }
 if (Test-Path $uiDir) {
     Get-ChildItem $uiDir -Filter *.png | ForEach-Object {
         Copy-Item $_.FullName (Join-Path $OutDir ('界面预览\' + $_.Name)) -Force
@@ -41,7 +44,7 @@ if (Test-Path $uiDir) {
 # 快速上手
 $quick = @'
 ========================================
-  一键挪动 v1.0.3  快速上手
+  一键挪动 v1.1.0  快速上手
 ========================================
 
 【首次运行】（被杀软/SmartScreen 拦截时看这里）
@@ -60,7 +63,7 @@ $quick = @'
      解压到新文件夹（如 一键挪动_v1.0.2 / 一键挪动_v1.0.3），旧路径的排除项
      就不再匹配，需要重新添加。
    · 推荐做法（一次搞定，以后不用再加）：
-       a) 固定一个目录，例如 D:\Tools\一键挪动\，只往这一个目录解压/覆盖；
+       a) 固定一个目录，例如 E:\Tools\一键挪动\，只往这一个目录解压/覆盖；
        b) 首次运行「首次运行.cmd」会自动把该目录加入 Windows 安全中心排除项
           （v1.0.3 起默认自动添加，不再询问；想跳过可加 -NoExclude）；
        c) 以后升级只需把新版的 一键挪动.exe 覆盖到同一目录即可。
@@ -81,6 +84,15 @@ $quick = @'
 5. 完成后软件照常使用（实际已在新盘）。
    若想还原，点「撤销这次搬移」。
 
+【顺手卸载用不上的软件】
+   · 在列表里选中软件 → 点右下角「卸载这个软件」（或右键 → 卸载这个软件）。
+   · 确认页会显示它的安装位置、占用空间、卸载方式；
+     点「开始卸载」后自动：备份注册表项 → 结束占用进程 → 运行官方卸载程序
+     → 校验 → 清理残留目录与快捷方式。
+   · 卸载不可撤销，但会先建系统还原点并导出注册表卸载项
+     （%ProgramData%\YijianNuodong\logs\uninstall_backup\ 里有恢复说明）。
+   · 没有官方卸载程序的绿色软件，必须勾选「我确认手工清理」才会动手。
+
 遇到「文件被占用」：
    · 在提示面板点「结束这些进程并继续」（会先正常关闭，必要时强制结束）；
    · 或点「重启后自动完成」，下次开机会在大部分软件启动前完成搬移。
@@ -92,6 +104,8 @@ $quick = @'
    · 不要搬 Windows 系统目录、杀毒软件、驱动类软件、微软商店应用；
    · 目标盘必须是本地 NTFS 磁盘，且预留足够空间；
    · 搬移前建议退出该软件，重要数据先备份。
+   · 卸载是彻底删除：系统目录/系统组件会被拒绝，同一目录下的其他软件不受影响；
+     还要用的软件请选「搬移」而不是「卸载」。
 
 详细说明、常见问题与源码构建方式见 使用说明.md。
 '@

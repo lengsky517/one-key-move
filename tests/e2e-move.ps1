@@ -16,26 +16,25 @@ if ([string]::IsNullOrEmpty($SourceRoot)) {
     $SourceRoot = Join-Path $env:TEMP 'okm-e2e-src'
 }
 
-if ([string]::IsNullOrEmpty($TargetRoot)) {
-    $sysRoot = $env:SystemDrive
-    $fixed = [System.IO.DriveInfo]::GetDrives() | Where-Object {
-        $_.DriveType -eq 'Fixed' -and $_.IsReady -and $_.Name.TrimEnd('\') -ne $sysRoot.TrimEnd('\')
-    } | Select-Object -First 1
-    if ($fixed) {
-        $TargetRoot = Join-Path $fixed.RootDirectory.FullName 'okm-e2e-dst'
-    } else {
-        $TargetRoot = Join-Path $env:TEMP 'okm-e2e-dst'
-        Write-Host '==> 未找到第二个固定磁盘，退化为临时目录（无法验证跨盘搬家）' -ForegroundColor Yellow
-    }
-    Write-Host ("==> 目标根目录: " + $TargetRoot) -ForegroundColor Cyan
+# 目标盘：优先用第二个固定磁盘（跨盘才能验证真实搬家），不可写则退化为工作区临时目录
+function Test-Writable([string]$path) {
+    try {
+        New-Item -ItemType Directory -Force -Path $path -ErrorAction Stop | Out-Null
+        return $true
+    } catch { return $false }
 }
-# 目标根目录不可写时（受限沙箱 / 权限不足），退回仓库内临时目录继续测试
-try {
-    New-Item -ItemType Directory -Force -Path $TargetRoot | Out-Null
-} catch {
-    $fallback = Join-Path $root 'tests\_tmp\e2e-dst'
-    Write-Host ("==> 无法写入 " + $TargetRoot + "（" + $_.Exception.Message + "），改用 " + $fallback) -ForegroundColor Yellow
-    $TargetRoot = $fallback
+if ([string]::IsNullOrEmpty($TargetRoot)) {
+    $sysDrive = ($env:SystemDrive).TrimEnd(':', '\')
+    foreach ($d in [System.IO.DriveInfo]::GetDrives()) {
+        if ($d.DriveType -ne 'Fixed' -or -not $d.IsReady) { continue }
+        if ($d.Name.TrimEnd(':', '\') -eq $sysDrive) { continue }
+        $candidate = Join-Path $d.RootDirectory.FullName 'okm-e2e-dst'
+        if (Test-Writable $candidate) { $TargetRoot = $candidate; break }
+    }
+    if ([string]::IsNullOrEmpty($TargetRoot)) {
+        $TargetRoot = Join-Path $root 'tests\_tmp\e2e-dst'
+        New-Item -ItemType Directory -Force -Path $TargetRoot | Out-Null
+    }
 }
 
 $pass = 0; $fail = 0; $skip = 0
