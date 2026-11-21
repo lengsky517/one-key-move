@@ -37,6 +37,9 @@ namespace YijianNuodong.UI
         private Thread _sizeScanThread;
         private int _sizeScanVersion;
         private volatile bool _sizeScanActive;
+        private bool _sizeScanPending;
+        private bool _formShown;
+        private System.Windows.Forms.Timer _sizeScanTimer;
         private long _scanElapsedMs = -1;
         private bool _scanFailed;
         private string _scanErrorText = string.Empty;
@@ -674,7 +677,9 @@ namespace YijianNuodong.UI
                 _programList.EndUpdate();
             }
             AdjustProgramColumns();
-            StartBackgroundSizeScan();
+            // 大小统计必须等窗口真正显示、用户看到「计算中…」之后再开始，
+            // 否则启动期它会和首帧绘制抢磁盘，表现为「点开半天不出界面」。
+            ScheduleSizeScan();
 
             bool empty = _programList.Items.Count == 0;
             if (empty)
@@ -839,6 +844,8 @@ namespace YijianNuodong.UI
             _sizeScanActive = true;
             Thread worker = new Thread(delegate()
             {
+                Stopwatch sizeWatch = Stopwatch.StartNew();
+                int computed = 0;
                 try
                 {
                     for (int i = 0; i < targets.Count; i++)
@@ -854,6 +861,7 @@ namespace YijianNuodong.UI
                         catch { }
                         if (size < 0) continue;
 
+                        computed++;
                         InstalledProgram item = program;
                         long value = size;
                         SafeUi(delegate
@@ -866,20 +874,30 @@ namespace YijianNuodong.UI
                                 UpdatePage2Size();
                             }
                         });
+
+                        // 每算完一条让出 40ms，别让统计线程把磁盘占满，影响用户操作。
+                        try { Thread.Sleep(40); }
+                        catch { }
                     }
                 }
                 finally
                 {
+                    sizeWatch.Stop();
+                    long elapsed = sizeWatch.ElapsedMilliseconds;
+                    int count = computed;
                     SafeUi(delegate
                     {
                         if (version != _sizeScanVersion) return;
                         _sizeScanActive = false;
                         _sizeScanThread = null;
+                        Log.Info("软件大小统计完成：" + count + " 个，用时 " + elapsed + " 毫秒");
                     });
                 }
             });
             worker.IsBackground = true;
-            worker.Priority = ThreadPriority.BelowNormal;
+            // 用最低优先级 + 每条之间让一下磁盘：统计是「锦上添花」，
+            // 绝不能让用户觉得窗口卡、点不动。
+            worker.Priority = ThreadPriority.Lowest;
             _sizeScanThread = worker;
             worker.Start();
         }
@@ -889,6 +907,39 @@ namespace YijianNuodong.UI
             _sizeScanVersion++;
             _sizeScanActive = false;
             _sizeScanThread = null;
+        }
+
+        /// <summary>
+        /// 安排一次大小统计：窗口还没显示就先挂起，显示后延迟一小段时间再开始，
+        /// 连点搜索时会被不断重置（相当于防抖），不会边打字边扫盘。
+        /// </summary>
+        private void ScheduleSizeScan()
+        {
+            if (!_formShown)
+            {
+                _sizeScanPending = true;
+                return;
+            }
+            if (_sizeScanTimer == null)
+            {
+                _sizeScanTimer = new System.Windows.Forms.Timer();
+                _sizeScanTimer.Interval = 900;
+                _sizeScanTimer.Tick += delegate
+                {
+                    _sizeScanTimer.Stop();
+                    _sizeScanPending = false;
+                    StartBackgroundSizeScan();
+                };
+            }
+            _sizeScanTimer.Stop();
+            _sizeScanTimer.Start();
+        }
+
+        /// <summary>窗口第一次真正显示后由 MainForm_Shown 调用。</summary>
+        private void NotifyFormShown()
+        {
+            _formShown = true;
+            if (_sizeScanPending) ScheduleSizeScan();
         }
 
         private void SetProgramRowSizeText(InstalledProgram program, string text)

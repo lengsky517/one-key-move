@@ -1,6 +1,7 @@
 // T3 拥有：主窗口（三步向导：选择软件 -> 选择位置 -> 开始搬移进度/结果）
 // 本文件：窗口初始化、整体布局、步骤切换、公共辅助与预览用数据
 using System;
+using System.Diagnostics;
 using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
@@ -136,7 +137,7 @@ namespace YijianNuodong.UI
             if (_previewMode) return;
 
             RestoreWindowSize();
-            StartScan();
+            // 扫描推迟到窗口真正显示之后再开始：先让用户看到界面，再干活。
             if (!string.IsNullOrEmpty(_initialPath)) HandleDroppedPath(_initialPath);
             CheckPendingRebootJob();
             UpdateNextButtonState();
@@ -192,8 +193,44 @@ namespace YijianNuodong.UI
 
         private bool _previewScrollToLocks;
 
+        private static long StartupElapsedMs()
+        {
+            try
+            {
+                using (Process current = Process.GetCurrentProcess())
+                {
+                    return (long)(DateTime.Now - current.StartTime).TotalMilliseconds;
+                }
+            }
+            catch
+            {
+                return -1;
+            }
+        }
+
+        private static void LogStartupElapsed(string what)
+        {
+            long ms = StartupElapsedMs();
+            if (ms >= 0) Log.Info(what + "（进程启动后 " + ms + " 毫秒）");
+            else Log.Info(what);
+        }
+
+        private void LogShownTime()
+        {
+            LogStartupElapsed("主窗口已显示到屏幕上");
+        }
+
         private void MainForm_Shown(object sender, EventArgs e)
         {
+            // 窗口已经真正显示出来了：先扫描软件，扫描完再由 ScheduleSizeScan 统计大小。
+            NotifyFormShown();
+            LogShownTime();
+            if (!_previewMode)
+            {
+                LogStartupElapsed("主窗口已显示，开始后台扫描软件");
+                StartScan();
+            }
+
             if (!_previewScrollToLocks) return;
             _previewScrollToLocks = false;
             try
