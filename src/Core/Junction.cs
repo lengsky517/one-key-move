@@ -63,8 +63,16 @@ namespace YijianNuodong.Core
         [DllImport("kernel32.dll", SetLastError = true)]
         private static extern bool CloseHandle(IntPtr hObject);
 
+        // 注意：CreateSymbolicLinkW 返回的是 BOOLEAN（1 字节），不是 Win32 BOOL（4 字节）。
+        // 不加 [MarshalAs(UnmanagedType.U1)] 时 .NET 按 4 字节读返回值，会读到栈上的脏数据，
+        // 导致「明明失败却返回 true」，随后校验才失败——表现为「创建成功但校验指向失败」的假成功。
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.U1)]
         private static extern bool CreateSymbolicLinkW(string lpSymlinkFileName, string lpTargetFileName, uint dwFlags);
+
+        // 硬链接：返回 Win32 BOOL（4 字节），默认 bool 封送即正确；同卷、无需任何特权。
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern bool CreateHardLinkW(string lpFileName, string lpExistingFileName, IntPtr lpSecurityAttributes);
 
         /// <summary>
         /// 创建目录联接 linkPath -> targetPath。
@@ -157,6 +165,85 @@ namespace YijianNuodong.Core
             catch (Exception ex)
             {
                 error = "创建目录联接失败：" + ex.Message;
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// 创建「文件型」符号链接 linkPath -> targetPath（例如 Office Click-to-Run 在安装目录里放的那些 DLL 链接）。
+        /// 只做 CreateSymbolicLink（非目录），成功后校验指向；失败返回 false 由调用方决定是否退化为真实复制。
+        /// </summary>
+        public static bool CreateFileLink(string linkPath, string targetPath, out string error)
+        {
+            error = null;
+            if (string.IsNullOrEmpty(linkPath) || string.IsNullOrEmpty(targetPath))
+            {
+                error = "创建文件链接失败：路径或目标为空。";
+                return false;
+            }
+
+            string link = PathUtil.Normalize(linkPath);
+            string target = PathUtil.Normalize(targetPath);
+            if (string.IsNullOrEmpty(link) || string.IsNullOrEmpty(target))
+            {
+                error = "创建文件链接失败：路径或目标无效。";
+                return false;
+            }
+            if (!File.Exists(target) && !Directory.Exists(target))
+            {
+                error = "创建文件链接失败：目标不存在：" + target;
+                return false;
+            }
+            if (File.Exists(link) || Directory.Exists(link) || IsReparsePoint(link))
+            {
+                error = "创建文件链接失败：路径已存在：" + link;
+                return false;
+            }
+
+            try
+            {
+                uint flags = SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE;
+                bool symlinkOk = CreateSymbolicLinkW(link, target, flags);
+                int symlinkCode = Marshal.GetLastWin32Error();
+                if (symlinkOk && Verify(link, target))
+                {
+                    Log.Info("已创建文件符号链接：" + link + " -> " + target);
+                    return true;
+                }
+                if (symlinkOk)
+                {
+                    Log.Warn("文件符号链接已创建但校验指向失败，尝试改为硬链接：" + link);
+                }
+                // 清理可能残留的半成品（只可能是我们自己刚建的那一个）
+                if (IsReparsePoint(link) || File.Exists(link))
+                {
+                    try { File.Delete(link); } catch { }
+                }
+
+                // 退路：硬链接（同一个磁盘内可用，不需要管理员/开发者模式，也不怕目标被删）
+                if (File.Exists(target))
+                {
+                    if (CreateHardLinkW(link, target, IntPtr.Zero))
+                    {
+                        FileInfo linkInfo = new FileInfo(link);
+                        FileInfo targetInfo = new FileInfo(target);
+                        if (linkInfo.Length == targetInfo.Length)
+                        {
+                            Log.Info("已创建硬链接（目标与本机同为 NTFS，符号链接不可用时自动降级）：" + link + " -> " + target);
+                            return true;
+                        }
+                        try { File.Delete(link); } catch { }
+                        error = "创建文件链接失败：硬链接长度与目标不一致。";
+                        return false;
+                    }
+                }
+
+                error = "创建文件链接失败（符号链接：" + Win32Message(symlinkCode) + "；硬链接也不行，可能目标在另一个磁盘）。";
+                return false;
+            }
+            catch (Exception ex)
+            {
+                error = "创建文件符号链接失败：" + ex.Message;
                 return false;
             }
         }

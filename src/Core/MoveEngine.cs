@@ -134,6 +134,18 @@ namespace YijianNuodong.Core
                     result.Errors.Add("该目录属于受保护的系统或应用目录（" + protectedName + "），为安全起见禁止搬移：" + sourcePath);
                 }
 
+                // ---------- Office 全家桶共用目录（Click-to-Run）单独拦截 ----------
+                string officeReason;
+                if (IsOfficeSharedRoot(sourcePath, out officeReason))
+                {
+                    result.IsProtectedSystemProgram = true;
+                    if (string.IsNullOrEmpty(result.ProtectedReason))
+                    {
+                        result.ProtectedReason = officeReason;
+                    }
+                    result.Errors.Add(officeReason + "： " + sourcePath);
+                }
+
                 // ---------- 目标父目录 ----------
                 string targetParent = string.Empty;
                 if (targetPath.Length > 0)
@@ -821,6 +833,29 @@ namespace YijianNuodong.Core
                         {
                             continue;
                         }
+
+                        // 文件级重解析点（符号链接）：不能当普通文件复制。
+                        // File.Copy 会把链接「解引用」成真实内容——Office Click-to-Run 就在
+                        // C:\Program Files\Microsoft Office 里放了 32 个指向 Common Files\ClickToRun 的链接，
+                        // 解引用会让目标体积凭空多出 56MB，校验随即失败回滚（v1.2.0 真机事故）。
+                        if ((info.Attributes & FileAttributes.ReparsePoint) != 0)
+                        {
+                            string linkTarget;
+                            if (Junction.TryGetTarget(filePath, out linkTarget) && !string.IsNullOrEmpty(linkTarget))
+                            {
+                                LinkItem fileLink = new LinkItem();
+                                fileLink.RelativePath = CombineRelative(relativeDirectory, SafeGetFileName(filePath));
+                                fileLink.Target = linkTarget;
+                                fileLink.IsFileLink = true;
+                                scan.Links.Add(fileLink);
+                            }
+                            else
+                            {
+                                warnings.Add("无法读取文件链接目标，已跳过：" + filePath);
+                            }
+                            continue;
+                        }
+
                         length = info.Length;
                     }
                     catch (Exception)
@@ -912,7 +947,9 @@ namespace YijianNuodong.Core
                 }
             }
 
-            // 2. 重建目录联接（尽力而为，失败只记日志）
+            // 2. 重建联接（目录联接优先 mklink /J；文件符号链接用 CreateSymbolicLink）
+            //    文件链接若因权限无法重建，退化为把链接指向的文件真实复制过来，
+            //    并把字节数记入 scan.DereferencedLink*，让校验按「实际写了多少」对账。
             for (int i = 0; i < scan.Links.Count; i++)
             {
                 LinkItem link = scan.Links[i];
@@ -920,7 +957,22 @@ namespace YijianNuodong.Core
                 string linkError;
                 try
                 {
-                    if (!Junction.Create(linkPath, link.Target, out linkError))
+                    if (link.IsFileLink)
+                    {
+                        string linkParent = Path.GetDirectoryName(linkPath);
+                        if (!string.IsNullOrEmpty(linkParent) && !Directory.Exists(PathUtil.ToLongPath(linkParent)))
+                        {
+                            Directory.CreateDirectory(PathUtil.ToLongPath(linkParent));
+                        }
+                        if (!Junction.CreateFileLink(linkPath, link.Target, out linkError))
+                        {
+                            if (!MaterializeFileLink(link, linkPath, scan, out linkError))
+                            {
+                                Log.Warn("无法重建文件链接，也无法复制其内容：" + linkPath + " -> " + link.Target + "：" + linkError);
+                            }
+                        }
+                    }
+                    else if (!Junction.Create(linkPath, link.Target, out linkError))
                     {
                         Log.Warn("无法在目标位置重建联接：" + linkPath + " -> " + link.Target + "：" + linkError);
                     }
@@ -993,6 +1045,35 @@ namespace YijianNuodong.Core
             // 4. 复制完成后统计刷新
             ReportCopyProgress(state, null, true);
             return true;
+        }
+
+        /// <summary>
+        /// 文件符号链接无法重建时的降级：把链接指向的文件真实复制到目标位置，
+        /// 并把「多写出来的字节」记进扫描结果，供校验对账时算进去。
+        /// </summary>
+        private static bool MaterializeFileLink(LinkItem link, string linkPath, SourceScan scan, out string error)
+        {
+            error = null;
+            try
+            {
+                if (!File.Exists(link.Target))
+                {
+                    error = "链接目标不存在：" + link.Target;
+                    return false;
+                }
+                long length = new FileInfo(PathUtil.ToLongPath(link.Target)).Length;
+                File.Copy(PathUtil.ToLongPath(link.Target), PathUtil.ToLongPath(linkPath), true);
+                scan.DereferencedLinkBytes += length;
+                scan.DereferencedLinkCount++;
+                Log.Warn("文件链接无法重建，已改为复制真实内容：" + linkPath + "（原链接指向 " + link.Target
+                    + "，" + TextUtil.FormatBytes(length) + "）");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                error = ex.Message;
+                return false;
+            }
         }
 
         /// <summary>带重试的单文件复制（失败 3 次后返回 false）</summary>
@@ -1142,16 +1223,17 @@ namespace YijianNuodong.Core
                 error = "统计目标文件数量失败：" + ex.Message;
                 return false;
             }
-            if (targetFileCount != scan.Files.Count)
+            if (targetFileCount != scan.Files.Count + scan.DereferencedLinkCount)
             {
-                error = "目标文件数量不一致（源 " + scan.Files.Count + " 个，目标 " + targetFileCount + " 个）。";
+                error = "目标文件数量不一致（源 " + (scan.Files.Count + scan.DereferencedLinkCount) + " 个，目标 " + targetFileCount + " 个）。";
                 return false;
             }
 
             long targetBytes = FileUtil.GetDirectorySize(targetRoot, null);
-            if (scan.TotalBytes > 0 && targetBytes >= 0 && targetBytes != scan.TotalBytes)
+            long expectedBytes = scan.TotalBytes + scan.DereferencedLinkBytes;
+            if (expectedBytes > 0 && targetBytes >= 0 && targetBytes != expectedBytes)
             {
-                error = "目标文件总大小不一致（源 " + TextUtil.FormatBytes(scan.TotalBytes)
+                error = "目标文件总大小不一致（源 " + TextUtil.FormatBytes(expectedBytes)
                     + "，目标 " + TextUtil.FormatBytes(targetBytes) + "）。";
                 return false;
             }
@@ -2159,6 +2241,51 @@ namespace YijianNuodong.Core
             return path;
         }
 
+        /// <summary>
+        /// 判断是否为 Microsoft Office 全家桶的共用安装目录（Click-to-Run 管理）。
+        /// Word / Excel / PowerPoint / OneNote 在注册表里都登记同一个 InstallLocation，
+        /// 单独搬其中一个会连带影响所有 Office 程序，且 Office 更新、修复会直接失败。
+        /// </summary>
+        private static bool IsOfficeSharedRoot(string path, out string reason)
+        {
+            reason = null;
+            string normalized = PathUtil.Normalize(path);
+            if (normalized.Length == 0)
+            {
+                return false;
+            }
+            string lower = normalized.ToLowerInvariant();
+            string leaf = string.Empty;
+            string[] parts = lower.Split('\\');
+            if (parts.Length > 0)
+            {
+                leaf = parts[parts.Length - 1].Trim();
+            }
+
+            bool hit = false;
+            if (leaf == "microsoft office")
+            {
+                hit = true;
+            }
+            else if (lower.Contains("\\microsoft office\\root"))
+            {
+                hit = true;
+            }
+            else if (lower.Contains("microsoft shared\\clicktorun"))
+            {
+                hit = true;
+            }
+            if (!hit)
+            {
+                return false;
+            }
+
+            reason = "这是 Microsoft Office 全家桶共用的安装目录（Word / Excel / PowerPoint / OneNote 都装在里面，由 Click-to-Run 统一管理）。"
+                + "单独搬动其中一个会连带影响所有 Office 程序，Office 的在线更新和修复也会失败，因此禁止搬移。"
+                + "确实需要腾出 C 盘空间时，请在「设置 → 应用」里卸载 Office 后重新安装到其他盘，或用微软官方的 Office 部署工具（ODT）指定安装路径。";
+            return true;
+        }
+
         /// <summary>判断是否为受保护的系统/应用目录</summary>
         private static bool IsProtectedFolderName(string path, out string matchedName)
         {
@@ -2548,6 +2675,9 @@ namespace YijianNuodong.Core
         {
             public string RelativePath;
             public string Target;
+
+            /// <summary>true = 文件型符号链接（如 Office Click-to-Run 的 DLL 链接）；false = 目录联接</summary>
+            public bool IsFileLink;
         }
 
         /// <summary>源目录扫描结果</summary>
@@ -2557,6 +2687,12 @@ namespace YijianNuodong.Core
             public List<string> Directories = new List<string>();
             public List<LinkItem> Links = new List<LinkItem>();
             public long TotalBytes;
+
+            /// <summary>文件链接无法重建、退化成真实复制时写入的字节数（校验时要算进去）</summary>
+            public long DereferencedLinkBytes;
+
+            /// <summary>文件链接无法重建、退化成真实复制的个数</summary>
+            public int DereferencedLinkCount;
         }
 
         /// <summary>复制进度状态</summary>

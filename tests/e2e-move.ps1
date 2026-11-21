@@ -240,6 +240,82 @@ try {
     try { Remove-Item $lockDir -Recurse -Force -ErrorAction SilentlyContinue } catch { }
 }
 
+# ---------- 6.5 含文件符号链接的目录搬家（v1.2.1 回归：Office Click-to-Run 场景） ----------
+# 真机事故：Office 安装目录里放了 32 个「指向 ClickToRun 的 DLL 符号链接」，
+# 旧版 File.Copy 会解引用把真实内容复制出来，导致目标比源多 56MB，校验失败并回滚。
+Write-Host ""
+Write-Host "==> 含文件符号链接的目录搬家" -ForegroundColor Cyan
+$linkAppName = 'LinkApp'
+$linkSrc = Join-Path $SourceRoot $linkAppName
+$linkDst = Join-Path $TargetRoot $linkAppName
+$extShared = Join-Path $SourceRoot '_ext_shared'
+try {
+    New-Item -ItemType Directory -Force -Path (Join-Path $linkSrc 'app') | Out-Null
+    New-Item -ItemType Directory -Force -Path $extShared | Out-Null
+    $extFile = Join-Path $extShared 'SharedRuntime.dll'
+    $extBytes = New-Object byte[] (2 * 1024 * 1024)
+    (New-Object Random(7)).NextBytes($extBytes)
+    [System.IO.File]::WriteAllBytes($extFile, $extBytes)
+    Set-Content -Path (Join-Path $linkSrc 'app\main.txt') -Value 'link app' -Encoding UTF8
+    $fileLink = Join-Path $linkSrc 'app\SharedRuntime.dll'
+
+    $cfArgs = [object[]]::new(3)
+    $cfArgs[0] = [string]$fileLink
+    $cfArgs[1] = [string]$extFile
+    $cfArgs[2] = $null
+    $linkCreated = [bool]$jType.GetMethod('CreateFileLink').Invoke($null, $cfArgs)
+
+    $isReparse = $false
+    if (Test-Path $fileLink) {
+        $irArgs = [object[]]::new(1)
+        $irArgs[0] = [string]$fileLink
+        $isReparse = [bool]$jType.GetMethod('IsReparsePoint').Invoke($null, $irArgs)
+    }
+
+    if (-not $linkCreated -or -not $isReparse) {
+        Skipped '含文件符号链接的搬家' ('当前环境无法创建文件符号链接（需要管理员或开发者模式），已降级为硬链接或跳过: ' + [string]$cfArgs[2])
+    } else {
+        # 源统计按「链接自身长度为 0」算，搬家后引擎要么重建链接、要么按真实内容复制并计入对账
+        $linkProg = [Activator]::CreateInstance($ipType)
+        $linkProg.DisplayName = 'LinkApp 演示程序'
+        $linkProg.InstallPath = $linkSrc
+        $linkProg.ExecutablePath = (Join-Path $linkSrc 'app\main.txt')
+        $linkProg.Id = $linkSrc.ToLowerInvariant()
+        $linkProg.SizeBytes = -1
+        $linkProg.Source = [Enum]::Parse($psType, 'ManualPath')
+
+        $linkReq = [Activator]::CreateInstance($reqType)
+        $linkReq.Program = $linkProg
+        $linkReq.TargetDirectory = $linkDst
+        $linkReq.CreateJunction = $true
+        $linkReq.KillBlockingProcesses = $false
+        $linkReq.StopRelatedServices = $false
+        $linkReq.UpdateShortcuts = $false
+        $linkReq.UpdateRegistry = $false
+        $linkReq.CreateRestorePoint = $false
+
+        $linkPre = $meType.GetMethod('Precheck', [Type[]]@($reqType)).Invoke($null, @($linkReq))
+        Assert '含链接的目录预检可继续' ([bool]$linkPre.CanProceed) ('预检未通过: ' + (@($linkPre.Errors) -join '; '))
+
+        $linkExec = $meType.GetMethod('Execute', [Type[]]@($reqType, $asm.GetType('YijianNuodong.Core.MoveProgressHandler'), [System.Func[bool]]))
+        $linkResult = $linkExec.Invoke($null, @($linkReq, $null, $null))
+        Assert '含文件符号链接的搬家成功（不再误报体积不一致）' ([bool]$linkResult.Success) ('阶段=' + $linkResult.FinalStage + ' 错误=' + $linkResult.ErrorMessage)
+        Assert '链接文件在新位置可用' (Test-Path (Join-Path $linkDst 'app\SharedRuntime.dll')) '新位置缺少链接文件'
+        if (Test-Path (Join-Path $linkDst 'app\SharedRuntime.dll')) {
+            $dstLen = (New-Object System.IO.FileInfo (Join-Path $linkDst 'app\SharedRuntime.dll')).Length
+            Assert '链接文件内容长度正确' ($dstLen -eq $extBytes.Length) ("实际 $dstLen 字节，期望 $($extBytes.Length)")
+        }
+        Assert '原路径变为目录联接' (Test-Path (Join-Path $linkSrc 'app\main.txt')) '原路径不可访问'
+    }
+} catch {
+    $inner = $_.Exception; if ($inner.InnerException) { $inner = $inner.InnerException }
+    Bad '含文件符号链接的搬家' $inner.Message
+} finally {
+    try { Remove-Item $linkSrc -Recurse -Force -ErrorAction SilentlyContinue } catch { }
+    try { Remove-Item $linkDst -Recurse -Force -ErrorAction SilentlyContinue } catch { }
+    try { Remove-Item $extShared -Recurse -Force -ErrorAction SilentlyContinue } catch { }
+}
+
 # ---------- 7. 清理 ----------
 if (-not $KeepArtifacts) {
     try { Remove-Item $SourceRoot -Recurse -Force -ErrorAction SilentlyContinue } catch { }

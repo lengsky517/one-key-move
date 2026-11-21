@@ -53,6 +53,9 @@ namespace YijianNuodong.SelfTest
             Group("目录联接 Junction");
             TestJunction();
 
+            Group("Office 共用目录保护");
+            TestOfficeProtection();
+
             Group("用户设置 AppSettings");
             TestSettings();
 
@@ -617,6 +620,51 @@ namespace YijianNuodong.SelfTest
                     Check("通过联接读写文件", File.Exists(Path.Combine(link, "marker.txt")), "通过联接访问文件失败");
                     Check("删除联接不影响目标内容", Junction.Remove(link, out error) && !Directory.Exists(link) && File.Exists(Path.Combine(target, "marker.txt")), "删除联接异常: " + error);
                 }
+
+                // ---- 文件型符号链接（Office Click-to-Run 场景，v1.2.1 回归）----
+                // 目录里存在「指向外部文件的符号链接」时，扫描必须把它当链接，
+                // 绝不能当普通文件复制（否则解引用会把目标体积撑大，校验失败回滚）。
+                string realFile = Path.Combine(baseDir, "shared", "RealDll.dll");
+                Directory.CreateDirectory(Path.GetDirectoryName(realFile));
+                File.WriteAllBytes(realFile, new byte[64 * 1024]);
+                string fileLink = Path.Combine(baseDir, "app", "LinkedDll.dll");
+                Directory.CreateDirectory(Path.GetDirectoryName(fileLink));
+                string fileLinkError;
+                bool fileLinkCreated = Junction.CreateFileLink(fileLink, realFile, out fileLinkError);
+                if (!fileLinkCreated)
+                {
+                    Skip("创建文件符号链接", "当前环境不允许（通常需要管理员或开发者模式）: " + fileLinkError);
+                }
+                else
+                {
+                    Check("创建文件链接（符号链接或硬链接）", File.Exists(fileLink), "文件链接不存在");
+                    if (Junction.IsReparsePoint(fileLink))
+                    {
+                        // 真正的符号链接：Length 必须是 0，否则 File.Copy 会解引用导致体积校验失败
+                        Check("文件符号链接 Length 为 0（复制时必须当链接而非内容）", new FileInfo(fileLink).Length == 0,
+                            "链接自身 Length 应为 0，实际 " + new FileInfo(fileLink).Length);
+                        string fileLinkTarget;
+                        Check("读取文件链接目标", Junction.TryGetTarget(fileLink, out fileLinkTarget) && PathUtil.SamePath(fileLinkTarget, realFile),
+                            "文件链接目标读取失败: " + fileLinkTarget);
+                    }
+                    else
+                    {
+                        // 降级成硬链接（无特权时的退路）：内容必须与目标一致
+                        Check("硬链接降级后长度与目标一致", new FileInfo(fileLink).Length == new FileInfo(realFile).Length,
+                            "硬链接长度不符");
+                        byte[] a = File.ReadAllBytes(fileLink);
+                        byte[] b = File.ReadAllBytes(realFile);
+                        bool same = a.Length == b.Length;
+                        if (same)
+                        {
+                            for (int i = 0; i < a.Length; i++)
+                            {
+                                if (a[i] != b[i]) { same = false; break; }
+                            }
+                        }
+                        Check("硬链接降级后内容与目标一致", same, "硬链接内容不一致");
+                    }
+                }
             }
             finally
             {
@@ -633,9 +681,54 @@ namespace YijianNuodong.SelfTest
             }
         }
 
-        private static void TestUninstall()
+        /// <summary>
+        /// v1.2.1：Office 全家桶共用目录（Click-to-Run）必须被拒绝搬移。
+        /// 真机事故：用户把「Microsoft OneNote - zh-cn」搬到 E:\Microsoft Office，
+        /// 该目录其实是 Word/Excel/PowerPoint/OneNote 共用的，且被搬后 Office 更新与修复都会失败。
+        /// </summary>
+        private static void TestOfficeProtection()
         {
-            Run("卸载支持判定", delegate
+            Run("Office 全家桶共用目录被拒绝搬移", delegate
+            {
+                string baseDir = Path.Combine(Path.GetTempPath(), "okm_selftest_office_" + Guid.NewGuid().ToString("N"));
+                string officeDir = Path.Combine(baseDir, "Microsoft Office", "root", "Office16");
+                try
+                {
+                    Directory.CreateDirectory(officeDir);
+                    File.WriteAllText(Path.Combine(officeDir, "ONENOTE.EXE"), "stub");
+                    string targetParent = Path.Combine(baseDir, "moved");
+                    Directory.CreateDirectory(targetParent);
+
+                    InstalledProgram program = new InstalledProgram();
+                    program.Id = PathUtil.Normalize(officeDir);
+                    program.DisplayName = "Microsoft OneNote - zh-cn";
+                    program.InstallPath = officeDir;
+                    program.ExecutablePath = Path.Combine(officeDir, "ONENOTE.EXE");
+                    program.SizeBytes = -1;
+
+                    MoveRequest request = new MoveRequest();
+                    request.Program = program;
+                    request.TargetDirectory = Path.Combine(targetParent, "Office16");
+                    request.CreateRestorePoint = false;
+
+                    PrecheckResult result = MoveEngine.Precheck(request);
+                    Check("Office 共用目录被标记为受保护", result.IsProtectedSystemProgram,
+                        "应识别为受保护的 Office 共用目录");
+                    Check("Office 共用目录不允许搬移", !result.CanProceed,
+                        "CanProceed 应为 false，实际 true");
+                    Check("给出 Office 专属原因", !string.IsNullOrEmpty(result.ProtectedReason)
+                        && result.ProtectedReason.Contains("Office"),
+                        "ProtectedReason 应提到 Office，实际：" + (result.ProtectedReason == null ? "(null)" : result.ProtectedReason));
+                }
+                finally
+                {
+                    try { Directory.Delete(baseDir, true); } catch { }
+                }
+            });
+        }
+
+        private static void TestUninstall()
+        {            Run("卸载支持判定", delegate
             {
                 if (UninstallEngine.IsUninstallSupported(null)) throw new Exception("空程序不应支持卸载");
                 InstalledProgram blank = new InstalledProgram();

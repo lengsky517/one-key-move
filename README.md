@@ -1,8 +1,8 @@
-# 一键挪动（One Key Move）
+﻿# 一键挪动（One Key Move）
 
 > 把装在 C 盘、又不敢乱动的软件，一次搬到别的盘。搬完桌面快捷方式照常能用；用不上的软件，也可以在同一个窗口里直接卸载。
 
-**一键挪动** 是一个 Windows 10 / 11 上的绿色小工具（单文件 exe，约 400 KB）。它把误装到 C 盘的软件整体迁移到 D/E 盘，同时自动处理快捷方式、注册表路径、被占用的进程，并在原位置留下一个「目录联接」——所以即使某些软件不认路径变化，也能继续正常运行。v1.1.0 起还能一键**卸载**不再需要的软件；v1.2.0 起列表可以点表头按名称或体积排序，选中软件还会告诉你它是干什么的、能不能搬、能不能卸。
+**一键挪动** 是一个 Windows 10 / 11 上的绿色小工具（单文件 exe，约 400 KB）。它把误装到 C 盘的软件整体迁移到 D/E 盘，同时自动处理快捷方式、注册表路径、被占用的进程，并在原位置留下一个「目录联接」——所以即使某些软件不认路径变化，也能继续正常运行。v1.1.0 起还能一键**卸载**不再需要的软件；v1.2.0 起列表可以点表头按名称或体积排序，选中软件还会告诉你它是干什么的、能不能搬、能不能卸；v1.2.1 修掉了含「文件符号链接」的目录（Office 常见）搬家必然失败的问题，并会拦下 Office 全家桶共用目录。
 
 *English: One Key Move is a small Windows utility (single .exe, no installer) that relocates programs installed on the C: drive to another disk, updates shortcuts and registry paths, handles locked files, and leaves a junction behind so existing paths keep working. Undo is one click. Since v1.1.0 it can also uninstall programs you no longer need.*
 
@@ -186,7 +186,7 @@ docs\            架构说明、界面截图
 
 ## 版本
 
-当前版本 **1.2.0**。变更记录见 [`CHANGELOG.md`](CHANGELOG.md)。
+当前版本 **1.2.1**。变更记录见 [`CHANGELOG.md`](CHANGELOG.md)。
 
 ## 许可证
 
