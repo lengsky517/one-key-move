@@ -59,6 +59,12 @@ namespace YijianNuodong.SelfTest
             Group("卸载 Uninstall");
             TestUninstall();
 
+            Group("软件说明库 SoftwareCatalog");
+            TestCatalog();
+
+            Group("列表排序 ProgramSort");
+            TestProgramSort();
+
             StringBuilder sb = new StringBuilder();
             sb.AppendLine("========== 一键挪动 逻辑自检报告 ==========");
             for (int i = 0; i < _lines.Count; i++) sb.AppendLine(_lines[i]);
@@ -723,6 +729,100 @@ namespace YijianNuodong.SelfTest
             });
         }
 
+        // ---------------- 软件说明库 ----------------
+        private static void TestCatalog()
+        {
+            Check("说明库有足够的条目", SoftwareCatalog.Count >= 60, "实际 " + SoftwareCatalog.Count + " 条，太少了");
+
+            SoftwareInfo wechat = SoftwareCatalog.Lookup("微信", "Tencent", @"C:\Program Files\Tencent\WeChat");
+            CheckEqual("微信能匹配到中国用户看得懂的说明", "微信", wechat.MatchedName);
+            Check("微信的说明是白话而不是官方措辞", wechat.Summary.IndexOf("聊天") >= 0, "实际说明：" + wechat.Summary);
+            Check("微信判定为可以搬移", wechat.Move == MoveAdvice.Safe, "实际 " + wechat.Move);
+            Check("微信判定为可以卸载", wechat.Uninstall == UninstallAdvice.Safe, "实际 " + wechat.Uninstall);
+
+            SoftwareInfo vc = SoftwareCatalog.Lookup("Microsoft Visual C++ 2015-2022 Redistributable (x64)",
+                "Microsoft Corporation", @"C:\Program Files\Microsoft Visual Studio\VC");
+            Check("VC 运行库被识别为运行库", vc.Kind == SoftwareKind.Runtime, "实际 " + vc.Kind);
+            Check("VC 运行库不允许卸载", vc.Uninstall == UninstallAdvice.DoNotRemove, "实际 " + vc.Uninstall);
+            Check("VC 运行库不允许搬移", vc.Move == MoveAdvice.KeepInPlace, "实际 " + vc.Move);
+
+            SoftwareInfo edge = SoftwareCatalog.Lookup("Microsoft Edge", "Microsoft Corporation",
+                @"C:\Program Files (x86)\Microsoft\Edge\Application");
+            Check("Edge 被识别为系统自带", edge.Kind == SoftwareKind.System, "实际 " + edge.Kind);
+            Check("Edge 属于系统软件", edge.IsSystemComponent, "IsSystemComponent 应为 true");
+            Check("Edge 的说明点明它是浏览器", edge.Summary.IndexOf("浏览器") >= 0, "实际说明：" + edge.Summary);
+
+            // digital 里含 git：短关键字必须只认开头命中，否则会把无关软件说成 Git
+            SoftwareInfo notGit = SoftwareCatalog.Lookup("Digital Clock Widget", "Some Studio", @"C:\Program Files\Digital Clock");
+            Check("短关键字不会误配（Digital 里的 git）", notGit.MatchedName != "Git", "被误判成 " + notGit.MatchedName);
+            Check("未收录的软件也会给出第三方判断", notGit.Kind == SoftwareKind.ThirdParty, "实际 " + notGit.Kind);
+
+            SoftwareInfo unknown = SoftwareCatalog.Lookup("某某自研工具", "某某公司", @"C:\Program Files\Zzz Tool");
+            Check("生僻软件有兜底说明", unknown.Summary.Length > 0, "说明为空");
+            Check("兜底说明不会标成系统软件", !unknown.IsSystemComponent, "被误标为系统软件");
+
+            SoftwareInfo driver = SoftwareCatalog.Lookup("Windows Driver Package - Intel (wificlient)", "Intel",
+                @"C:\Windows\System32\DriverStore");
+            Check("驱动识别为驱动类", driver.Kind == SoftwareKind.Driver, "实际 " + driver.Kind);
+            Check("驱动不允许搬移", driver.Move == MoveAdvice.KeepInPlace, "实际 " + driver.Move);
+
+            InstalledProgram inWindows = new InstalledProgram();
+            inWindows.DisplayName = "某个没有名字的组件";
+            inWindows.InstallPath = @"C:\Windows\System32\Foo";
+            SoftwareInfo sysInfo = SoftwareCatalog.Lookup(inWindows);
+            Check("装在 Windows 目录下的自动判为系统组件", sysInfo.IsSystemComponent, "实际 " + sysInfo.Kind);
+            Check("系统组件一定不建议搬移", sysInfo.Move == MoveAdvice.KeepInPlace, "实际 " + sysInfo.Move);
+        }
+
+        // ---------------- 列表排序 ----------------
+        private static void TestProgramSort()
+        {
+            List<InstalledProgram> list = new List<InstalledProgram>();
+            list.Add(MakeProgram("Zeta 工具", "1.10", "Zeta", 300));
+            list.Add(MakeProgram("alpha 笔记", "1.9", "Alpha", 100));
+            list.Add(MakeProgram("Beta 压缩", "2.0", "Beta", -1));
+            list.Add(MakeProgram("中文软件", "1.2", "中文", 200));
+
+            ProgramSort.Sort(list, ProgramSort.ColumnSize, false);
+            CheckEqualLong("按体积降序：最大在最前", 300, list[0].SizeBytes);
+            CheckEqualLong("按体积降序：未知体积排最后", -1, list[list.Count - 1].SizeBytes);
+
+            ProgramSort.Sort(list, ProgramSort.ColumnSize, true);
+            CheckEqualLong("按体积升序：最小在最前", 100, list[0].SizeBytes);
+            CheckEqualLong("按体积升序：未知体积仍在最后", -1, list[list.Count - 1].SizeBytes);
+
+            ProgramSort.Sort(list, ProgramSort.ColumnVersion, true);
+            CheckEqual("版本自然序：1.2 最小", "1.2", list[0].Version);
+            CheckEqual("版本自然序：1.9 在 1.10 前面", "1.9", list[1].Version);
+            CheckEqual("版本自然序：1.10 排在 1.9 之后", "1.10", list[2].Version);
+
+            ProgramSort.Sort(list, ProgramSort.ColumnName, true);
+            string firstName = list[0].DisplayName;
+            ProgramSort.Sort(list, ProgramSort.ColumnName, false);
+            string lastName = list[list.Count - 1].DisplayName;
+            CheckEqual("名称升序与降序互为反向", firstName, lastName);
+
+            Check("默认方向：体积列默认大的在前", !ProgramSort.DefaultAscending(ProgramSort.ColumnSize), "体积列默认应为降序");
+            Check("默认方向：名称列默认 A→Z", ProgramSort.DefaultAscending(ProgramSort.ColumnName), "名称列默认应为升序");
+
+            List<InstalledProgram> same = new List<InstalledProgram>();
+            same.Add(MakeProgram("同名", "1.0", "P", 10));
+            same.Add(MakeProgram("同名", "1.0", "P", 10));
+            ProgramSort.Sort(same, ProgramSort.ColumnSize, true);
+            Check("完全相同的两项排序不报错", same.Count == 2, "排序后数量变了");
+        }
+
+        private static InstalledProgram MakeProgram(string name, string version, string publisher, long size)
+        {
+            InstalledProgram program = new InstalledProgram();
+            program.DisplayName = name;
+            program.Version = version;
+            program.Publisher = publisher;
+            program.SizeBytes = size;
+            program.InstallPath = @"C:\Program Files\" + name;
+            program.Source = ProgramSource.Registry;
+            return program;
+        }
         private static void TestSettings()
         {
             Run("设置读写", delegate

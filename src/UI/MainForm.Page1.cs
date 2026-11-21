@@ -40,6 +40,11 @@ namespace YijianNuodong.UI
         private bool _sizeScanPending;
         private bool _formShown;
         private System.Windows.Forms.Timer _sizeScanTimer;
+        private ToolTip _listToolTip;
+        private Label _sortHint;
+        // 排序状态：-1 表示保持扫描出来的默认顺序
+        private int _sortColumn = -1;
+        private bool _sortAscending = true;
         private long _scanElapsedMs = -1;
         private bool _scanFailed;
         private string _scanErrorText = string.Empty;
@@ -68,7 +73,7 @@ namespace YijianNuodong.UI
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 10));
             layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 10));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 64));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 96));
 
             // 拖放区
             _dropZone = new Ctl.DropZonePanel();
@@ -134,11 +139,12 @@ namespace YijianNuodong.UI
             TableLayoutPanel filterRow = new TableLayoutPanel();
             filterRow.Dock = DockStyle.Fill;
             filterRow.Margin = new Padding(0);
-            filterRow.ColumnCount = 3;
+            filterRow.ColumnCount = 4;
             filterRow.RowCount = 1;
             filterRow.BackColor = Theme.Surface;
             filterRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 180));
             filterRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            filterRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 108));
             filterRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 72));
             filterRow.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
@@ -172,7 +178,19 @@ namespace YijianNuodong.UI
             _refreshLink.Margin = new Padding(0);
             _refreshLink.BackdropColor = Theme.Surface;
             _refreshLink.Click += delegate { StartScan(); };
-            filterRow.Controls.Add(_refreshLink, 2, 0);
+            filterRow.Controls.Add(_refreshLink, 3, 0);
+
+            // 表头排序的提示：不写这行，用户不会知道点表头能排序
+            _sortHint = new Label();
+            _sortHint.AutoSize = false;
+            _sortHint.Dock = DockStyle.Fill;
+            _sortHint.Margin = new Padding(0);
+            _sortHint.Font = Theme.Small;
+            _sortHint.ForeColor = Theme.TextMuted;
+            _sortHint.BackColor = Theme.Surface;
+            _sortHint.TextAlign = ContentAlignment.MiddleRight;
+            _sortHint.Text = "点表头可排序";
+            filterRow.Controls.Add(_sortHint, 2, 0);
             layout.Controls.Add(filterRow, 0, 4);
 
             // 程序列表
@@ -209,6 +227,9 @@ namespace YijianNuodong.UI
             _programList.KeyDown += ProgramList_KeyDown;
             _programList.MouseDown += ProgramList_MouseDown;
             _programList.Resize += delegate { AdjustProgramColumns(); };
+            _programList.ColumnClick += ProgramList_ColumnClick;
+            _listToolTip = new ToolTip();
+            _listToolTip.SetToolTip(_programList, "点击列标题可以排序：软件名称按字母顺序，占用空间按文件大小");
             Theme.EnableDoubleBuffer(_programList);
 
             // 右键菜单：卸载这个软件
@@ -260,7 +281,7 @@ namespace YijianNuodong.UI
             _uninstallButton.Style = Ctl.FlatButtonStyle.Secondary;
             _uninstallButton.Font = Theme.BodyBold;
             _uninstallButton.Dock = DockStyle.Fill;
-            _uninstallButton.Margin = new Padding(8, 12, 0, 12);
+            _uninstallButton.Margin = new Padding(8, 32, 0, 32);
             _uninstallButton.BackdropColor = Theme.Surface;
             _uninstallButton.Enabled = false;
             _uninstallButton.Click += delegate { UninstallSelectedProgram(); };
@@ -271,7 +292,7 @@ namespace YijianNuodong.UI
             _nextButton.Style = Ctl.FlatButtonStyle.Primary;
             _nextButton.Font = Theme.BodyBold;
             _nextButton.Dock = DockStyle.Fill;
-            _nextButton.Margin = new Padding(8, 12, 0, 12);
+            _nextButton.Margin = new Padding(8, 32, 0, 32);
             _nextButton.BackdropColor = Theme.Surface;
             _nextButton.Enabled = false;
             _nextButton.Click += delegate { GoToStep2(); };
@@ -651,6 +672,11 @@ namespace YijianNuodong.UI
 
         private void BindProgramList()
         {
+            // 用户点过表头就按那个顺序排；没点过保持扫描出来的默认顺序。
+            if (_sortColumn >= 0 && _visiblePrograms != null && _visiblePrograms.Count > 1)
+            {
+                _visiblePrograms.Sort(ComparePrograms);
+            }
             _programList.BeginUpdate();
             try
             {
@@ -677,6 +703,7 @@ namespace YijianNuodong.UI
                 _programList.EndUpdate();
             }
             AdjustProgramColumns();
+            UpdateColumnHeaders();
             // 大小统计必须等窗口真正显示、用户看到「计算中…」之后再开始，
             // 否则启动期它会和首帧绘制抢磁盘，表现为「点开半天不出界面」。
             ScheduleSizeScan();
@@ -702,16 +729,43 @@ namespace YijianNuodong.UI
             if (_selectedProgram != null) SelectProgramInList(_selectedProgram);
         }
 
+        private void ProgramList_ColumnClick(object sender, ColumnClickEventArgs e)
+        {
+            if (e.Column < 0 || e.Column >= _programList.Columns.Count) return;
+            if (_sortColumn == e.Column)
+            {
+                _sortAscending = !_sortAscending;
+            }
+            else
+            {
+                _sortColumn = e.Column;
+                // 占用空间按「大的在前」更符合直觉，其它列从 A 到 Z
+                _sortAscending = e.Column != 4;
+            }
+            UpdateColumnHeaders();
+            BindProgramList();
+        }
+
+        private void UpdateColumnHeaders()
+        {
+            if (_programList == null) return;
+            string[] titles = { "软件名称", "版本", "发布者", "安装位置", "占用空间", "来源" };
+            for (int i = 0; i < _programList.Columns.Count && i < titles.Length; i++)
+            {
+                string text = titles[i];
+                if (i == _sortColumn) text += _sortAscending ? " ▲" : " ▼";
+                if (_programList.Columns[i].Text != text) _programList.Columns[i].Text = text;
+            }
+        }
+
+        /// <summary>排序比较器：真正的规则在 Core\ProgramSort 里，便于单元自检。</summary>
+        private int ComparePrograms(InstalledProgram a, InstalledProgram b)
+        {
+            return ProgramSort.Compare(_sortColumn, _sortAscending, a, b);
+        }
         private static string SourceText(ProgramSource source)
         {
-            if ((source & ProgramSource.Shortcut) != 0) return "快捷方式";
-            if ((source & ProgramSource.Registry) != 0) return "注册表";
-            if ((source & ProgramSource.AppPaths) != 0) return "应用路径";
-            if ((source & ProgramSource.StartMenu) != 0) return "开始菜单";
-            if ((source & ProgramSource.RunningProcess) != 0) return "运行进程";
-            if ((source & ProgramSource.FolderScan) != 0) return "目录扫描";
-            if ((source & ProgramSource.ManualPath) != 0) return "手动指定";
-            return "未知";
+            return ProgramSort.SourceLabel(source);
         }
 
         private void SelectProgramInList(InstalledProgram program)

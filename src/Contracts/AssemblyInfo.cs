@@ -8,6 +8,6 @@ using System.Runtime.InteropServices;
 [assembly: AssemblyDescription("把安装到 C 盘的软件安全搬到其他磁盘，原路径保持可用（目录联接）")]
 [assembly: AssemblyProduct("一键挪动 OneKeyMove")]
 [assembly: AssemblyCopyright("Copyright (C) 2026")]
-[assembly: AssemblyVersion("1.1.2.0")]
-[assembly: AssemblyFileVersion("1.1.2.0")]
+[assembly: AssemblyVersion("1.2.0.0")]
+[assembly: AssemblyFileVersion("1.2.0.0")]
 [assembly: ComVisible(false)]
