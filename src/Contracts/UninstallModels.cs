@@ -92,6 +92,11 @@ namespace YijianNuodong.Core
         /// <summary>卸载程序可执行文件路径（用于识别占用进程），可能为空</summary>
         public string UninstallerExe { get; set; }
         public string ProductCode { get; set; }
+        /// <summary>
+        /// 备用命令：注册表里登记的原始卸载命令。MSI 返回 1605（系统里没这个产品）时用它重试，
+        /// 解决「键名长得像 MSI、其实是 electron-builder 之类自带的卸载器」的情况。
+        /// </summary>
+        public string FallbackCommand { get; set; }
         public bool IsMsi { get; set; }
         /// <summary>是否必须管理员权限</summary>
         public bool RequiresAdmin { get; set; }

@@ -242,6 +242,9 @@ namespace YijianNuodong.Core
                     if (target.ProductCode.Length > 0)
                     {
                         target.Command = "MsiExec.exe /X" + target.ProductCode;
+                        // 有些软件（electron-builder / Squirrel）把卸载项写成 MSI 的样子，
+                        // 但真正的卸载器是它自带的 exe。留一手备用命令，msiexec 说「没这个产品」时改用它。
+                        target.FallbackCommand = SelectFallbackCommand(msiEntry);
                     }
                     else
                     {
@@ -419,6 +422,7 @@ namespace YijianNuodong.Core
                 context.DisplayName = string.IsNullOrEmpty(target.DisplayName) ? "未知软件" : target.DisplayName;
                 context.InstallPath = target.InstallPath;
                 context.Command = target.Command;
+                context.FallbackCommand = target.FallbackCommand;
                 result.DisplayName = context.DisplayName;
                 result.InstallPath = target.InstallPath;
                 if (target.Warnings != null) result.Warnings.AddRange(target.Warnings);
@@ -804,14 +808,17 @@ namespace YijianNuodong.Core
         private static string ResolveProductCode(string keyName, string uninstallString,
             string quietUninstallString, bool windowsInstaller)
         {
-            // 键名本身就是 GUID（MSI 的标准形式）
-            string code = ExtractProductCode(keyName);
-            if (code.Length > 0) return code;
-
             // 只有 MSI 相关命令才从命令行里抓 GUID，避免把普通卸载器的参数误判成产品代码
             bool msiHint = windowsInstaller
                 || ContainsIgnoreCase(uninstallString, "msiexec")
                 || ContainsIgnoreCase(quietUninstallString, "msiexec");
+
+            // 键名是 GUID 确实是 MSI 的标准形式，但很多非 MSI 安装器（electron-builder /
+            // Squirrel 之类）也用 GUID 当键名。没有 MSI 迹象时若凭键名认定是 MSI，
+            // 就会去跑 msiexec /X，必然返回 1605（系统里没这个产品），真机已踩过。
+            string code = ExtractProductCode(keyName);
+            if (code.Length > 0) return msiHint ? code : string.Empty;
+
             if (!msiHint) return string.Empty;
 
             code = ExtractProductCode(uninstallString);
@@ -843,6 +850,16 @@ namespace YijianNuodong.Core
         {
             if (string.IsNullOrEmpty(text) || string.IsNullOrEmpty(value)) return false;
             return text.IndexOf(value, StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+        /// <summary>从卸载项里挑一条「不是 msiexec 的」原始卸载命令，作为 MSI 不认产品时的备用</summary>
+        private static string SelectFallbackCommand(UninstallRegistryEntry entry)
+        {
+            if (entry == null) return string.Empty;
+            string quiet = TextUtil.Clean(entry.QuietUninstallString);
+            if (quiet.Length > 0 && !ContainsIgnoreCase(quiet, "msiexec")) return quiet;
+            string normal = TextUtil.Clean(entry.UninstallString);
+            if (normal.Length > 0 && !ContainsIgnoreCase(normal, "msiexec")) return normal;
+            return string.Empty;
         }
 
         private static string ReadString(RegistryKey key, string name)
@@ -1356,7 +1373,24 @@ namespace YijianNuodong.Core
 
         #region 执行：运行卸载程序
 
-        /// <summary>运行官方卸载程序并等待退出（超时不杀进程）</summary>
+        /// <summary>MSI 表示「系统里没有这个产品」的退出码：不是失败，而是该换命令了</summary>
+        private static bool IsMsiProductMissingExitCode(int exitCode)
+        {
+            return exitCode == 1605 || exitCode == 1619 || exitCode == 1638;
+        }
+
+        /// <summary>卸载器明显没真正干活（用户取消 / 致命错误 / 另一个安装进行中 / 产品不存在），不值得再空等</summary>
+        private static bool IsDefinitiveNoWorkExitCode(int exitCode)
+        {
+            return exitCode == 1602 || exitCode == 1603 || exitCode == 1618
+                || IsMsiProductMissingExitCode(exitCode);
+        }
+
+        /// <summary>
+        /// 运行官方卸载程序并等待退出（超时不杀进程）。
+        /// MSI 返回 1605/1619/1638（系统里没这个产品）时，自动改用注册表里登记的原始卸载命令重试一次，
+        /// 再不行就交给后续的手工清理 —— 真机踩过：Coze 的卸载项键名是 GUID，但真卸载器是自带的 exe。
+        /// </summary>
         private static void RunUninstaller(UninstallContext context, UninstallProgressHandler progress)
         {
             UninstallTarget target = context.Target;
@@ -1370,173 +1404,217 @@ namespace YijianNuodong.Core
                 return;
             }
 
-            string fileName = string.Empty;
-            string arguments = string.Empty;
             bool isMsi = target.Method == UninstallMethod.MsiProduct;
             bool msiWithCode = isMsi && !string.IsNullOrEmpty(target.ProductCode);
 
+            string command = TextUtil.Clean(target.Command);
             if (msiWithCode)
             {
-                fileName = GetMsiExecPath();
-                arguments = "/X" + target.ProductCode + (silent ? " /qn" : string.Empty) + " /norestart";
+                command = "MsiExec.exe /X" + target.ProductCode;
             }
-            else
+            else if (command.Length == 0)
             {
-                string command = TextUtil.Clean(target.Command);
-                if (command.Length == 0)
-                {
-                    result.Warnings.Add("卸载命令为空，无法运行官方卸载程序，只清理文件与注册表项。");
-                    Log.Warn("卸载命令为空，跳过卸载程序。");
-                    return;
-                }
-                string rawFileName;
-                string rawArguments;
-                ParseCommand(command, out rawFileName, out rawArguments);
-                if (isMsi) rawArguments = RewriteMsiArguments(rawArguments);
-                fileName = ResolveExecutablePath(rawFileName, context.InstallPath);
-                arguments = rawArguments;
-                if (string.IsNullOrEmpty(fileName))
-                {
-                    result.Warnings.Add("无法从卸载命令解析出可执行文件：" + command);
-                    Log.Warn("无法解析卸载命令：" + command);
-                    return;
-                }
-            }
-
-            ProcessStartInfo startInfo = new ProcessStartInfo();
-            startInfo.FileName = fileName;
-            startInfo.Arguments = arguments;
-            startInfo.UseShellExecute = true;
-            try
-            {
-                if (!string.IsNullOrEmpty(context.InstallPath) && Directory.Exists(context.InstallPath))
-                {
-                    startInfo.WorkingDirectory = context.InstallPath;
-                }
-            }
-            catch (Exception)
-            {
-                // 工作目录设置失败不影响启动
-            }
-
-            bool interactive = !(msiWithCode && silent);
-            if (interactive)
-            {
-                Report(progress, UninstallStage.RunningUninstaller, "正在运行官方卸载程序",
-                    "请在弹出的卸载窗口里完成操作…", 25, null, true);
-            }
-
-            Log.Info("运行卸载程序：" + fileName + " " + arguments);
-
-            Process process = null;
-            try
-            {
-                process = Process.Start(startInfo);
-            }
-            catch (Exception ex)
-            {
-                result.Warnings.Add("启动卸载程序失败：" + ex.Message);
-                Log.Error("启动卸载程序失败：" + fileName + " " + arguments, ex);
-                return;
-            }
-            if (process == null)
-            {
-                result.Warnings.Add("启动卸载程序失败：系统未返回进程句柄。");
-                Log.Warn("启动卸载程序失败：系统未返回进程句柄。");
+                result.Warnings.Add("卸载命令为空，无法运行官方卸载程序，只清理文件与注册表项。");
+                Log.Warn("卸载命令为空，跳过卸载程序。");
                 return;
             }
 
-            context.UninstallerRan = true;
-            result.UninstallerRan = true;
+            string fallback = TextUtil.Clean(context.FallbackCommand);
+            bool useMsiFirst = msiWithCode;
 
-            int timeoutSeconds = context.Request.TimeoutSeconds > 0
-                ? context.Request.TimeoutSeconds : DefaultTimeoutSeconds;
-            long deadlineMs = (long)timeoutSeconds * 1000L;
-            long waitedMs = 0;
-            bool exited = false;
-
-            while (true)
+            for (int round = 0; round < 2; round++)
             {
-                if (IsCancelled(context))
+                bool asMsi = useMsiFirst && round == 0;
+                string fileName;
+                string arguments;
+
+                if (asMsi)
                 {
-                    context.Canceled = true;
-                    Log.Warn("用户取消：卸载程序可能仍在后台运行，未强制结束它。");
-                    result.Warnings.Add("用户取消时卸载程序可能仍在后台运行，残留清理已跳过。");
-                    break;
+                    fileName = GetMsiExecPath();
+                    arguments = "/X" + target.ProductCode
+                        + (silent ? " /qn" : string.Empty) + " /norestart";
+                }
+                else
+                {
+                    string rawFileName;
+                    string rawArguments;
+                    ParseCommand(command, out rawFileName, out rawArguments);
+                    // 老路径：Method 是 MSI 但没解析出产品代码时，命令本身仍是 msiexec
+                    if (round == 0 && isMsi) rawArguments = RewriteMsiArguments(rawArguments);
+                    fileName = ResolveExecutablePath(rawFileName, context.InstallPath);
+                    arguments = rawArguments;
+                    if (string.IsNullOrEmpty(fileName))
+                    {
+                        result.Warnings.Add("无法从卸载命令解析出可执行文件：" + command);
+                        Log.Warn("无法解析卸载命令：" + command);
+                        return;
+                    }
                 }
 
-                bool done;
+                ProcessStartInfo startInfo = new ProcessStartInfo();
+                startInfo.FileName = fileName;
+                startInfo.Arguments = arguments;
+                startInfo.UseShellExecute = true;
                 try
                 {
-                    done = process.WaitForExit(UninstallerWaitPollMs);
+                    if (!string.IsNullOrEmpty(context.InstallPath) && Directory.Exists(context.InstallPath))
+                    {
+                        startInfo.WorkingDirectory = context.InstallPath;
+                    }
                 }
                 catch (Exception)
                 {
-                    done = true;
+                    // 工作目录设置失败不影响启动
                 }
-                if (done)
+
+                if (!asMsi || !silent)
                 {
-                    exited = true;
-                    break;
+                    Report(progress, UninstallStage.RunningUninstaller, "正在运行官方卸载程序",
+                        "请在弹出的卸载窗口里完成操作…", 25, null, true);
                 }
 
-                waitedMs += UninstallerWaitPollMs;
-                if (waitedMs >= deadlineMs)
+                Log.Info("运行卸载程序：" + fileName + " " + arguments);
+
+                Process process = null;
+                try
                 {
-                    context.TimedOut = true;
-                    break;
+                    process = Process.Start(startInfo);
                 }
-            }
+                catch (Exception ex)
+                {
+                    result.Warnings.Add("启动卸载程序失败：" + ex.Message);
+                    Log.Error("启动卸载程序失败：" + fileName + " " + arguments, ex);
+                    return;
+                }
+                if (process == null)
+                {
+                    result.Warnings.Add("启动卸载程序失败：系统未返回进程句柄。");
+                    Log.Warn("启动卸载程序失败：系统未返回进程句柄。");
+                    return;
+                }
 
-            if (context.TimedOut)
-            {
-                result.TimedOut = true;
+                context.UninstallerRan = true;
                 result.UninstallerRan = true;
-                result.UninstallerExitCode = -1;
-                result.Warnings.Add("卸载程序超时未结束（超过 " + timeoutSeconds
-                    + " 秒），残留清理已跳过，以免与卸载程序争抢文件。");
-                Log.Warn("卸载程序超时未结束（" + timeoutSeconds + " 秒），跳过残留清理。");
-                return;
-            }
 
-            if (!exited)
-            {
-                // 用户取消
-                result.UninstallerRan = true;
-                result.UninstallerExitCode = -1;
+                int timeoutSeconds = context.Request.TimeoutSeconds > 0
+                    ? context.Request.TimeoutSeconds : DefaultTimeoutSeconds;
+                long deadlineMs = (long)timeoutSeconds * 1000L;
+                long waitedMs = 0;
+                bool exited = false;
+
+                while (true)
+                {
+                    if (IsCancelled(context))
+                    {
+                        context.Canceled = true;
+                        Log.Warn("用户取消：卸载程序可能仍在后台运行，未强制结束它。");
+                        result.Warnings.Add("用户取消时卸载程序可能仍在后台运行，残留清理已跳过。");
+                        break;
+                    }
+
+                    bool done;
+                    try
+                    {
+                        done = process.WaitForExit(UninstallerWaitPollMs);
+                    }
+                    catch (Exception)
+                    {
+                        done = true;
+                    }
+                    if (done)
+                    {
+                        exited = true;
+                        break;
+                    }
+
+                    waitedMs += UninstallerWaitPollMs;
+                    if (waitedMs >= deadlineMs)
+                    {
+                        context.TimedOut = true;
+                        break;
+                    }
+                }
+
+                if (context.TimedOut)
+                {
+                    result.TimedOut = true;
+                    result.UninstallerRan = true;
+                    result.UninstallerExitCode = -1;
+                    result.Warnings.Add("卸载程序超时未结束（超过 " + timeoutSeconds
+                        + " 秒），残留清理已跳过，以免与卸载程序争抢文件。");
+                    Log.Warn("卸载程序超时未结束（" + timeoutSeconds + " 秒），跳过残留清理。");
+                    try { process.Dispose(); }
+                    catch (Exception) { }
+                    return;
+                }
+
+                if (!exited)
+                {
+                    // 用户取消
+                    result.UninstallerRan = true;
+                    result.UninstallerExitCode = -1;
+                    try { process.Dispose(); }
+                    catch (Exception) { }
+                    return;
+                }
+
+                int exitCode = -1;
+                try
+                {
+                    exitCode = process.ExitCode;
+                }
+                catch (Exception)
+                {
+                    exitCode = -1;
+                }
                 try { process.Dispose(); }
                 catch (Exception) { }
+
+                context.ExitCode = exitCode;
+                result.UninstallerExitCode = exitCode;
+                result.UninstallerRan = true;
+
+                if (exitCode == 0 || exitCode == 3010)
+                {
+                    Log.Info("卸载程序正常结束，退出码 " + exitCode + "。");
+                }
+                else
+                {
+                    Log.Warn("卸载程序返回退出码 " + exitCode + "。");
+                    result.Warnings.Add("卸载程序返回退出码 " + exitCode
+                        + "（0 或 3010 表示成功），卸载可能未完成。");
+                }
+
+                // MSI 说不认识这个产品，而注册表里还有一条真卸载器命令：换它再来一次
+                if (asMsi && IsMsiProductMissingExitCode(exitCode) && fallback.Length > 0)
+                {
+                    result.Warnings.Add("Windows Installer 返回 " + exitCode
+                        + "（系统里没有这个 MSI 产品），已改用注册表登记的卸载命令重试。");
+                    Log.Info("MSI 返回 " + exitCode + "，改用注册表卸载命令：" + fallback);
+                    command = fallback;
+                    useMsiFirst = false;
+                    continue;
+                }
+
+                if (asMsi && IsMsiProductMissingExitCode(exitCode))
+                {
+                    result.Warnings.Add("Windows Installer 返回 " + exitCode
+                        + "，说明这个软件并不是真正的 MSI 安装（或已被移除过），接下来只做手工清理。");
+                    Log.Warn("MSI 返回 " + exitCode + " 且没有备用卸载命令，转入手工清理。");
+                }
+
+                // 卸载器已经明确表示没干活（取消/致命错误/产品不存在/另一个安装进行中），
+                // 再去等 60 秒毫无意义 —— 直接进入校验与残留清理。
+                if (IsDefinitiveNoWorkExitCode(exitCode))
+                {
+                    Log.Info("退出码 " + exitCode + " 属于「卸载器没有真正开始工作」，跳过等待，直接校验。");
+                    return;
+                }
+
+                // 很多卸载器会先退出、由子进程继续干活，这里最多等 60 秒
+                WaitForCompletion(context, progress);
                 return;
             }
-
-            int exitCode = -1;
-            try
-            {
-                exitCode = process.ExitCode;
-            }
-            catch (Exception)
-            {
-                exitCode = -1;
-            }
-            try { process.Dispose(); }
-            catch (Exception) { }
-
-            context.ExitCode = exitCode;
-            result.UninstallerExitCode = exitCode;
-            result.UninstallerRan = true;
-
-            if (exitCode != 0 && exitCode != 3010)
-            {
-                result.Warnings.Add("卸载程序返回退出码 " + exitCode + "（0 或 3010 表示成功），卸载可能未完成。");
-                Log.Warn("卸载程序返回退出码 " + exitCode + "。");
-            }
-            else
-            {
-                Log.Info("卸载程序正常结束，退出码 " + exitCode + "。");
-            }
-
-            // 很多卸载器会先退出、由子进程继续干活，这里最多等 60 秒
-            WaitForCompletion(context, progress);
         }
 
         /// <summary>等待卸载真正完成（目录与注册表项都消失，最多 60 秒）</summary>
@@ -2303,11 +2381,19 @@ namespace YijianNuodong.Core
             bool manual = target != null && target.Method == UninstallMethod.ManualOnly;
             bool dirGone = string.IsNullOrEmpty(context.InstallPath)
                 || !Directory.Exists(context.InstallPath);
+            bool regGone = target == null || !AnyRegistryEntryExists(target);
             bool uninstallerOk = context.UninstallerRan
                 && (context.ExitCode == 0 || context.ExitCode == 3010);
 
+            // 真正的判据是「东西是否真的没了」，卸载器的退出码只作参考。
+            // 真机案例：Coze 的 msiexec 返回 1605（系统里没这个产品），但后续手工清理把安装目录、
+            // 快捷方式、注册表卸载项全删干净了 —— 软件其实已经卸载成功，不该报失败吓用户。
+            bool stateClean = dirGone && regGone;
+
             bool success;
             if (context.Canceled) success = false;
+            else if (context.TimedOut) success = uninstallerOk;
+            else if (stateClean) success = true;
             else if (manual) success = dirGone;
             else success = uninstallerOk;
 
@@ -3103,6 +3189,7 @@ namespace YijianNuodong.Core
             public string DisplayName;
             public string InstallPath;
             public string Command;
+        public string FallbackCommand;
             public string BackupFolder;
             public LockInfo Locks;
             public bool Canceled;

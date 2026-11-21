@@ -152,6 +152,91 @@ if ($null -ne $foundRecord) {
     Check '卸载记录含结果' ($recordText -match '成功|卸载') $foundRecord
 }
 
+# ---------- 5. 「长得像 MSI」的卸载项（GUID 键名 + 自带卸载器） ----------
+# 真机踩坑复现：Coze 的卸载项键名是 GUID，程序据此误判成 MSI 去跑 msiexec /X，
+# 结果返回 1605（系统里没这个产品），白等 60 秒、还报「卸载失败」。
+# 这里造一个同样的形状：键名 GUID、无 WindowsInstaller、UninstallString 是自带卸载器
+# （用 cmd /c exit 1605 冒充一个「跑了但什么也没干」的卸载器）。
+$work2 = Join-Path $WorkRoot 'CozeLike'
+$appDir2 = Join-Path $work2 'Coze App'
+New-Item -ItemType Directory -Path $appDir2 -Force | Out-Null
+foreach ($rel in @('Coze.exe', 'resources\app.asar', 'licenses.txt')) {
+    $full = Join-Path $appDir2 $rel
+    $parent = Split-Path -Parent $full
+    if (-not (Test-Path -LiteralPath $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
+    [System.IO.File]::WriteAllBytes($full, $bytes)
+}
+$fakeGuid = '{' + ([guid]::NewGuid().ToString().ToUpperInvariant()) + '}'
+$regPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\' + $fakeGuid
+New-Item -Path $regPath -Force | Out-Null
+New-ItemProperty -Path $regPath -Name 'DisplayName' -Value 'CozeLike测试程序' -PropertyType String -Force | Out-Null
+New-ItemProperty -Path $regPath -Name 'DisplayVersion' -Value '1.1.46' -PropertyType String -Force | Out-Null
+New-ItemProperty -Path $regPath -Name 'Publisher' -Value 'E2E' -PropertyType String -Force | Out-Null
+New-ItemProperty -Path $regPath -Name 'InstallLocation' -Value $appDir2 -PropertyType String -Force | Out-Null
+$uninstCmd = '"' + (Join-Path $env:WINDIR 'System32\cmd.exe') + '" /c exit 1605'
+New-ItemProperty -Path $regPath -Name 'UninstallString' -Value $uninstCmd -PropertyType String -Force | Out-Null
+
+$program2 = [Activator]::CreateInstance($programType)
+$program2.DisplayName = 'CozeLike测试程序'
+$program2.InstallPath = $appDir2
+$program2.UninstallString = ''
+$program2.Publisher = 'E2E'
+$program2.Version = '1.1.46'
+
+$target2 = $engineType.GetMethod('Precheck').Invoke($null, @($program2))
+Check 'GUID 键名但无 MSI 迹象：判为注册表命令而不是 MSI' ($target2.Method.ToString() -eq 'RegistryCommand') ("实际 " + $target2.Method + " / 错误 " + (@($target2.Errors) -join '；'))
+Check 'GUID 键名但无 MSI 迹象：没有解析出产品代码' ([string]::IsNullOrEmpty([string]$target2.ProductCode)) ("实际 " + [string]$target2.ProductCode)
+
+$req3 = [Activator]::CreateInstance($requestType)
+$req3.Target = $target2
+$req3.ConfirmManualDelete = $true
+$req3.CloseRunningPrograms = $false
+$req3.RemoveLeftovers = $true
+$req3.RemoveUserData = $false
+$req3.CreateRestorePoint = $false
+$req3.BackupRegistry = $false
+$req3.TimeoutSeconds = 60
+
+$sw = [Diagnostics.Stopwatch]::StartNew()
+$result3 = $engineType.GetMethod('Execute').Invoke($null, @($req3, $null, $null))
+$sw.Stop()
+$elapsedMs = $sw.ElapsedMilliseconds
+
+Check '卸载器没干活：卸载程序确实跑过' ([bool]$result3.UninstallerRan)
+Check '卸载器没干活：记录到退出码 1605' ([int]$result3.UninstallerExitCode -eq 1605) ("实际 " + $result3.UninstallerExitCode)
+Check '卸载器没干活：没有白等 60 秒' ($elapsedMs -lt 20000) ("实际耗时 " + $elapsedMs + " 毫秒")
+Check '卸载器没干活：没有判超时' (-not [bool]$result3.TimedOut)
+Check '卸载器没干活：目录与注册表都没了就算成功' ([bool]$result3.Success) ("FinalStage=" + $result3.FinalStage + " " + $result3.ErrorMessage)
+Check '卸载器没干活：安装目录被清理' (-not (Test-Path -LiteralPath $appDir2))
+Check '卸载器没干活：注册表卸载项没残留' (-not (Test-Path -LiteralPath $regPath))
+
+# ---------- 6. 真 MSI 形态：必须判成 MSI 产品 ----------
+$work3 = Join-Path $WorkRoot 'MsiLike'
+$appDir3 = Join-Path $work3 'Msi App'
+New-Item -ItemType Directory -Path $appDir3 -Force | Out-Null
+[System.IO.File]::WriteAllBytes((Join-Path $appDir3 'main.exe'), $bytes)
+$fakeGuid3 = '{' + ([guid]::NewGuid().ToString().ToUpperInvariant()) + '}'
+$regPath3 = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\' + $fakeGuid3
+New-Item -Path $regPath3 -Force | Out-Null
+New-ItemProperty -Path $regPath3 -Name 'DisplayName' -Value 'MsiLike测试程序' -PropertyType String -Force | Out-Null
+New-ItemProperty -Path $regPath3 -Name 'InstallLocation' -Value $appDir3 -PropertyType String -Force | Out-Null
+New-ItemProperty -Path $regPath3 -Name 'WindowsInstaller' -Value 1 -PropertyType DWord -Force | Out-Null
+New-ItemProperty -Path $regPath3 -Name 'UninstallString' -Value ('MsiExec.exe /X' + $fakeGuid3) -PropertyType String -Force | Out-Null
+
+$program3 = [Activator]::CreateInstance($programType)
+$program3.DisplayName = 'MsiLike测试程序'
+$program3.InstallPath = $appDir3
+$program3.UninstallString = ''
+$program3.Publisher = 'E2E'
+$program3.Version = '2.0.0'
+
+$target3 = $engineType.GetMethod('Precheck').Invoke($null, @($program3))
+Check '真 MSI 迹象：判为 MSI 产品' ($target3.Method.ToString() -eq 'MsiProduct') ("实际 " + $target3.Method)
+Check '真 MSI 迹象：解析出产品代码' (-not [string]::IsNullOrEmpty([string]$target3.ProductCode)) ("实际 " + [string]$target3.ProductCode)
+Check '真 MSI 迹象：会去跑 msiexec 而不是自带卸载器' ((([string]$target3.Command) -match 'msi') -or ([string]::IsNullOrEmpty([string]$target3.Command))) ("实际 " + [string]$target3.Command)
+Remove-Item -Path $regPath3 -Recurse -Force -ErrorAction SilentlyContinue
+
+
 # 清理
 if (Test-Path -LiteralPath $WorkRoot) {
     Remove-Item -LiteralPath $WorkRoot -Recurse -Force -ErrorAction SilentlyContinue
