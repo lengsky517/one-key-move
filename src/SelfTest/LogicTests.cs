@@ -68,6 +68,9 @@ namespace YijianNuodong.SelfTest
             Group("列表排序 ProgramSort");
             TestProgramSort();
 
+            Group("C盘清理 Cleanup");
+            MergeCleanupTests();
+
             StringBuilder sb = new StringBuilder();
             sb.AppendLine("========== 一键挪动 逻辑自检报告 ==========");
             for (int i = 0; i < _lines.Count; i++) sb.AppendLine(_lines[i]);
@@ -916,6 +919,22 @@ namespace YijianNuodong.SelfTest
             program.Source = ProgramSource.Registry;
             return program;
         }
+        private static void MergeCleanupTests()
+        {
+            string report = CleanupTests.RunAll();
+            string normalized = (report ?? string.Empty).Replace("\r\n", "\n");
+            string[] lines = normalized.Split(new char[] { '\n' });
+            for (int i = 0; i < lines.Length; i++)
+            {
+                string line = lines[i];
+                string trimmed = line == null ? string.Empty : line.TrimStart();
+                if (trimmed.StartsWith("[PASS]", StringComparison.Ordinal)) _pass++;
+                else if (trimmed.StartsWith("[FAIL]", StringComparison.Ordinal)) _fail++;
+                else if (trimmed.StartsWith("[SKIP]", StringComparison.Ordinal)) _skip++;
+                if (!string.IsNullOrEmpty(line)) _lines.Add("  " + line);
+            }
+        }
+
         private static void TestSettings()
         {
             Run("设置读写", delegate

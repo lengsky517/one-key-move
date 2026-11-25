@@ -22,6 +22,7 @@ namespace YijianNuodong.UI
         private Ctl.FlatCheckBox _onlyCDrive;
         private Label _statusLabel;
         private Ctl.FlatButton _refreshLink;
+        private Ctl.FlatButton _cleanupButton;
         private Ctl.BorderedPanel _listHost;
         private ListView _programList;
         private Label _emptyLabel;
@@ -139,12 +140,13 @@ namespace YijianNuodong.UI
             TableLayoutPanel filterRow = new TableLayoutPanel();
             filterRow.Dock = DockStyle.Fill;
             filterRow.Margin = new Padding(0);
-            filterRow.ColumnCount = 4;
+            filterRow.ColumnCount = 5;
             filterRow.RowCount = 1;
             filterRow.BackColor = Theme.Surface;
             filterRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 180));
             filterRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             filterRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 108));
+            filterRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120));
             filterRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 72));
             filterRow.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
@@ -177,8 +179,19 @@ namespace YijianNuodong.UI
             _refreshLink.Dock = DockStyle.Fill;
             _refreshLink.Margin = new Padding(0);
             _refreshLink.BackdropColor = Theme.Surface;
+
+            _cleanupButton = new Ctl.FlatButton();
+            _cleanupButton.Text = "清理 C 盘";
+            _cleanupButton.Style = Ctl.FlatButtonStyle.Ghost;
+            _cleanupButton.Font = Theme.SmallBold;
+            _cleanupButton.Dock = DockStyle.Fill;
+            _cleanupButton.Margin = new Padding(0);
+            _cleanupButton.BackdropColor = Theme.Surface;
+            _cleanupButton.Click += delegate { OpenCleanupDialog(); };
+            filterRow.Controls.Add(_cleanupButton, 3, 0);
+
             _refreshLink.Click += delegate { StartScan(); };
-            filterRow.Controls.Add(_refreshLink, 3, 0);
+            filterRow.Controls.Add(_refreshLink, 4, 0);
 
             // 表头排序的提示：不写这行，用户不会知道点表头能排序
             _sortHint = new Label();
@@ -867,6 +880,25 @@ namespace YijianNuodong.UI
             });
             worker.IsBackground = true;
             worker.Start();
+        }
+
+        private void OpenCleanupDialog()
+        {
+            if (_formClosing) return;
+            try
+            {
+                using (CleanupDialog dialog = new CleanupDialog())
+                {
+                    dialog.StartPosition = FormStartPosition.CenterParent;
+                    dialog.ShowDialog(this);
+                }
+                if (!_formClosing && _cleanupButton != null) _cleanupButton.Focus();
+            }
+            catch (Exception ex)
+            {
+                Log.Error("打开 C 盘清理窗口失败", ex);
+                ShowWarnBox("打开 C 盘清理窗口失败：" + ex.Message);
+            }
         }
 
         // ---------------------------------------------------------------------
