@@ -140,12 +140,13 @@ namespace YijianNuodong.UI
             TableLayoutPanel filterRow = new TableLayoutPanel();
             filterRow.Dock = DockStyle.Fill;
             filterRow.Margin = new Padding(0);
-            filterRow.ColumnCount = 5;
+            filterRow.ColumnCount = 6;
             filterRow.RowCount = 1;
             filterRow.BackColor = Theme.Surface;
             filterRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 180));
             filterRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             filterRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 108));
+            filterRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 152));
             filterRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120));
             filterRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 72));
             filterRow.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
@@ -188,12 +189,22 @@ namespace YijianNuodong.UI
             _cleanupButton.Margin = new Padding(0);
             _cleanupButton.BackdropColor = Theme.Surface;
             _cleanupButton.Click += delegate { OpenCleanupDialog(); };
-            filterRow.Controls.Add(_cleanupButton, 3, 0);
+            filterRow.Controls.Add(_cleanupButton, 4, 0);
 
             _refreshLink.Click += delegate { StartScan(); };
-            filterRow.Controls.Add(_refreshLink, 4, 0);
+            filterRow.Controls.Add(_refreshLink, 5, 0);
 
-            // 表头排序的提示：不写这行，用户不会知道点表头能排序
+            Ctl.FlatButton dataMoveButton = new Ctl.FlatButton();
+            dataMoveButton.Text = "空间盘点 / 数据搬家";
+            dataMoveButton.Style = Ctl.FlatButtonStyle.Ghost;
+            dataMoveButton.Font = Theme.SmallBold;
+            dataMoveButton.Dock = DockStyle.Fill;
+            dataMoveButton.Margin = new Padding(0);
+            dataMoveButton.BackdropColor = Theme.Surface;
+            dataMoveButton.Click += delegate { using (DataMoveDialog dialog = new DataMoveDialog()) dialog.ShowDialog(this); };
+            filterRow.Controls.Add(dataMoveButton, 3, 0);
+
+            // Existing sort hint remains visible next to the separate data action.
             _sortHint = new Label();
             _sortHint.AutoSize = false;
             _sortHint.Dock = DockStyle.Fill;

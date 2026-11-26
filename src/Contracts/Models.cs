@@ -187,6 +187,9 @@ namespace YijianNuodong.Core
     /// <summary>移动请求</summary>
     public class MoveRequest
     {
+        // Data migration only: validate renamed source against frozen hashes before publishing the junction.
+        internal Action ReleaseDataHandles { get; set; }
+        internal Action<string, string> ValidateDataTransfer { get; set; }
         public InstalledProgram Program { get; set; }
         /// <summary>完整目标目录（含软件文件夹名），如 D:\Software\WeChat</summary>
         public string TargetDirectory { get; set; }

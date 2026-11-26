@@ -1,4 +1,4 @@
-﻿# ============================================================================
+# ============================================================================
 #  一键挪动 (OneKeyMove) - 构建脚本
 #  适用: Windows 10 / 11（自带 .NET Framework 4.8 与 C# 编译器，无需安装 VS/SDK）
 #  用法:
@@ -109,6 +109,7 @@ $cscArgs.Add('/utf8output')
 $cscArgs.Add('/warn:4')
 $cscArgs.Add('/optimize+')
 $cscArgs.Add('/platform:anycpu')
+if ($IncludeSelfTest) { $cscArgs.Add('/define:SELFTEST') }
 $cscArgs.Add('/out:' + $outFile)
 
 if ($Target -eq 'exe') {

@@ -17,6 +17,8 @@ if (-not (Test-Path $exe)) {
     exit 1
 }
 
+$version = ([Version]([System.Diagnostics.FileVersionInfo]::GetVersionInfo($exe).FileVersion)).ToString(3)
+
 if (Test-Path $OutDir) { Remove-Item $OutDir -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $OutDir '界面预览') | Out-Null
@@ -24,7 +26,9 @@ New-Item -ItemType Directory -Force -Path (Join-Path $OutDir '界面预览') | O
 Copy-Item $exe (Join-Path $OutDir '一键挪动.exe') -Force
 $manual = Join-Path $root 'docs\使用说明.md'
 if (-not (Test-Path $manual)) { $manual = Join-Path $root 'README.md' }
-Copy-Item $manual (Join-Path $OutDir '使用说明.md') -Force
+$manualText = [System.IO.File]::ReadAllText($manual, [System.Text.Encoding]::UTF8)
+$manualText = $manualText.Replace('(docs/screenshots/', '(界面预览/').Replace('(screenshots/', '(界面预览/')
+[System.IO.File]::WriteAllText((Join-Path $OutDir '使用说明.md'), $manualText, (New-Object System.Text.UTF8Encoding($true)))
 
 # 首次运行辅助脚本（解除网络来源锁定 / 加入安全中心排除项 / 启动）
 $helperPs1 = Join-Path $root 'resources\first-run.ps1'
@@ -44,7 +48,7 @@ if (Test-Path $uiDir) {
 # 快速上手
 $quick = @'
 ========================================
-  一键挪动 v1.3.0  快速上手
+  一键挪动 v__VERSION__  快速上手
 ========================================
 
 【首次运行】（被杀软/SmartScreen 拦截时看这里）
@@ -114,6 +118,19 @@ $quick = @'
      不扫描文档、照片、聊天记录、Windows Installer 缓存、软件安装目录或回收站。
    · 清理按文件逻辑大小统计；记录在 %ProgramData%\YijianNuodong\logs\cleanup\。
 
+【空间盘点 / 数据搬家（v1.4.0）】
+   · 主窗口点「空间盘点 / 数据搬家」，先只读扫描，再查看四个页签。
+   · 「空间盘点」显示逻辑大小、性质和建议，汇总与子项不能相加；
+     Windows、整块 AppData、休眠、虚拟内存与还原点只展示说明。
+   · 「可搬数据」限 pip/npm/pnpm 缓存和 Codex/Claude/WorkBuddy/WorkBuddy AI
+     的插件子目录；已联接项显示实际位置，不重复搬。所有项目默认不选。
+   · 先退出相关软件，选择 D/E 盘目标父目录，核对每项完整路径后勾选执行；
+     逐文件 SHA256 校验并保留原路径联接，支持本次撤销或从搬家日记恢复。
+   · 「安装包归档」归档到目标父目录下 Installers，校验后才移除源文件，
+     留下 .restore.txt 原路径凭据，可按记录手动复制恢复。
+   · 「pip 默认下载目录」设置用户级 [download] dest，与缓存分开，
+     PowerShell/CMD 下条 pip download 生效，-d 可覆盖；原配置备份并可撤销。
+
 【Office / 大软件为什么提示不能搬】
    · Microsoft Office 是 Word/Excel/PowerPoint/OneNote 共用的一个安装目录，
      单独搬会连带影响所有 Office 程序，后续更新和修复也会失败，
@@ -145,7 +162,7 @@ $quick = @'
 
 详细说明、常见问题与源码构建方式见 使用说明.md。
 '@
-Set-Content -Path (Join-Path $OutDir '快速上手.txt') -Value $quick -Encoding UTF8
+Set-Content -Path (Join-Path $OutDir '快速上手.txt') -Value $quick.Replace('__VERSION__', $version) -Encoding UTF8
 
 $count = (Get-ChildItem $OutDir -Recurse -File).Count
 $size = (Get-ChildItem $OutDir -Recurse -File | Measure-Object -Property Length -Sum).Sum

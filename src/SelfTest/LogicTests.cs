@@ -18,9 +18,17 @@ namespace YijianNuodong.SelfTest
         private static int _fail;
         private static int _skip;
         private static string _currentGroup;
+        private static readonly string TestTempRoot = Path.GetFullPath(Path.Combine(Environment.CurrentDirectory, "..", "staging", "one-key-move-tests", "logic-" + Guid.NewGuid().ToString("N")));
 
         public static string RunAll()
         {
+            string appData = Path.Combine(TestTempRoot, "appdata");
+            System.Reflection.BindingFlags fields = System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static;
+            typeof(AppPaths).GetField("_baseDir", fields).SetValue(null, appData);
+            typeof(AppPaths).GetField("_logDir", fields).SetValue(null, Path.Combine(appData, "logs"));
+            typeof(AppPaths).GetField("_journalDir", fields).SetValue(null, Path.Combine(appData, "journal"));
+            typeof(AppPaths).GetField("_settingsFile", fields).SetValue(null, Path.Combine(appData, "settings.txt"));
+            AppPaths.EnsureCreated();
             _lines = new List<string>();
             _pass = 0;
             _fail = 0;
@@ -55,6 +63,9 @@ namespace YijianNuodong.SelfTest
 
             Group("Office 共用目录保护");
             TestOfficeProtection();
+
+            Group("空间盘点与数据搬家");
+            MergeDataMoveTests();
 
             Group("用户设置 AppSettings");
             TestSettings();
@@ -581,7 +592,7 @@ namespace YijianNuodong.SelfTest
 
         private static void TestLocks()
         {
-            string tempDir = Path.Combine(Path.GetTempPath(), "okm_selftest_lock_" + Guid.NewGuid().ToString("N"));
+            string tempDir = Path.Combine(TestTempRoot, "okm_selftest_lock_" + Guid.NewGuid().ToString("N"));
             try
             {
                 Directory.CreateDirectory(tempDir);
@@ -601,7 +612,7 @@ namespace YijianNuodong.SelfTest
 
         private static void TestJunction()
         {
-            string baseDir = Path.Combine(Path.GetTempPath(), "okm_selftest_junction_" + Guid.NewGuid().ToString("N"));
+            string baseDir = Path.Combine(TestTempRoot, "okm_selftest_junction_" + Guid.NewGuid().ToString("N"));
             string target = Path.Combine(baseDir, "target");
             string link = Path.Combine(baseDir, "link");
             try
@@ -693,7 +704,7 @@ namespace YijianNuodong.SelfTest
         {
             Run("Office 全家桶共用目录被拒绝搬移", delegate
             {
-                string baseDir = Path.Combine(Path.GetTempPath(), "okm_selftest_office_" + Guid.NewGuid().ToString("N"));
+                string baseDir = Path.Combine(TestTempRoot, "okm_selftest_office_" + Guid.NewGuid().ToString("N"));
                 string officeDir = Path.Combine(baseDir, "Microsoft Office", "root", "Office16");
                 try
                 {
@@ -739,7 +750,7 @@ namespace YijianNuodong.SelfTest
                 if (UninstallEngine.IsUninstallSupported(blank)) throw new Exception("没有安装目录的程序不应支持卸载");
                 InstalledProgram ok = new InstalledProgram();
                 ok.DisplayName = "有安装路径的程序";
-                ok.InstallPath = Path.GetTempPath();
+                ok.InstallPath = TestTempRoot;
                 if (!UninstallEngine.IsUninstallSupported(ok)) throw new Exception("有安装目录的程序应当支持卸载");
             });
 
@@ -762,7 +773,7 @@ namespace YijianNuodong.SelfTest
                 if (pr.CanProceed) throw new Exception("盘符根目录不应可执行");
             });
 
-            string baseDir = Path.Combine(Path.GetTempPath(), "okm_selftest_uninstall_" + Guid.NewGuid().ToString("N"));
+            string baseDir = Path.Combine(TestTempRoot, "okm_selftest_uninstall_" + Guid.NewGuid().ToString("N"));
             string fake = Path.Combine(baseDir, "fakeapp");
             try
             {
@@ -818,7 +829,7 @@ namespace YijianNuodong.SelfTest
             {
                 InstalledProgram probe = new InstalledProgram();
                 probe.DisplayName = "不存在的软件名字 0x" + Guid.NewGuid().ToString("N");
-                probe.InstallPath = Path.Combine(Path.GetTempPath(), "okm_never_exists");
+                probe.InstallPath = Path.Combine(TestTempRoot, "okm_never_exists");
                 List<UninstallRegistryEntry> entries = UninstallEngine.FindRegistryEntries(probe);
                 if (entries == null) throw new Exception("应返回空列表而不是 null");
                 if (entries.Count != 0) throw new Exception("不存在的软件不应匹配到卸载项，实际 " + entries.Count);
@@ -919,6 +930,19 @@ namespace YijianNuodong.SelfTest
             program.Source = ProgramSource.Registry;
             return program;
         }
+        private static void MergeDataMoveTests()
+        {
+            string report = DataMoveTests.RunAll();
+            string[] lines = (report ?? string.Empty).Replace("\r\n", "\n").Split(new char[] { '\n' });
+            for (int i = 0; i < lines.Length; i++)
+            {
+                string line = lines[i];
+                if (line.StartsWith("[PASS]", StringComparison.Ordinal)) _pass++;
+                else if (line.StartsWith("[FAIL]", StringComparison.Ordinal)) _fail++;
+                if (!string.IsNullOrEmpty(line)) _lines.Add("  " + line);
+            }
+        }
+
         private static void MergeCleanupTests()
         {
             string report = CleanupTests.RunAll();

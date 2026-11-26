@@ -181,7 +181,39 @@ namespace YijianNuodong.Core
             return result;
         }
 
+        public static CleanupResult ArchiveInstallers(CleanupScanResult scan, IList<string> ids, string destination, bool confirmed, Action<CleanupProgress> report, Func<bool> canceled)
+        {
+            CleanupResult result = new CleanupResult();
+            string canonical;
+            if (!confirmed || scan == null || scan.Canceled || ids == null || ids.Count == 0 || !TryCanonical(destination, out canonical)) { result.ErrorMessage = "请完成扫描、勾选并确认归档目标。"; return result; }
+            try
+            {
+                DataMoveEngine.CheckParents(canonical);
+                if (Junction.IsReparsePoint(canonical) || File.Exists(canonical)) throw new IOException("归档目标不能是链接或普通文件。");
+                if (PathUtil.SamePath(Path.GetPathRoot(canonical), Path.GetPathRoot(Environment.GetFolderPath(Environment.SpecialFolder.Windows)))) throw new IOException("归档目标必须在非系统盘。");
+                List<CleanupItem> selected = new List<CleanupItem>(); HashSet<string> unique = new HashSet<string>();
+                foreach (string id in ids) { CleanupItem item; if (!scan.Candidates.TryGetValue(id, out item) || item.Category != CleanupCategory.DownloadedInstallers) throw new IOException("包含无效或非安装包扫描项，未归档。"); if (unique.Add(id)) selected.Add(item); }
+                Directory.CreateDirectory(canonical);
+                foreach (CleanupItem item in selected)
+                {
+                    if (IsCanceled(canceled)) { result.Canceled = true; break; }
+                    string target = Path.Combine(canonical, Guid.NewGuid().ToString("N").Substring(0, 8) + "-" + item.DisplayName);
+                    string reason;
+                    bool archived = TryDeleteCandidate(scan, item, out reason, target);
+                    if (archived) { result.DeletedFiles++; result.DeletedBytes += item.SizeBytes; result.Details.Add("已归档：" + item.FullPath + " -> " + target); }
+                    else { result.SkippedFiles++; result.Details.Add("已保留源文件：" + item.FullPath + "；" + reason + "；若目标副本存在请核对：" + target); }
+                    Report(report, "归档：" + item.DisplayName, result.DeletedFiles + result.SkippedFiles, selected.Count, result.DeletedBytes);
+                }
+                result.LogPath = WriteJournal("安装包归档（不是永久删除）：\r\n" + string.Join("\r\n", result.Details.ToArray()) + "\r\n恢复方法：关闭安装器后将归档文件复制回原路径，原路径有文件时不要覆盖。", result);
+            }
+            catch (Exception ex) { result.ErrorMessage = ex.Message; }
+            return result;
+        }
+
         private static bool TryDeleteCandidate(CleanupScanResult scan, CleanupItem item, out string reason)
+        { return TryDeleteCandidate(scan, item, out reason, null); }
+
+        private static bool TryDeleteCandidate(CleanupScanResult scan, CleanupItem item, out string reason, string archiveTarget)
         {
             reason = null;
             try
@@ -193,7 +225,7 @@ namespace YijianNuodong.Core
                 if (root.Category != item.Category || (root.Category == CleanupCategory.DownloadedInstallers && !HasExtension(canonical, InstallerExtensions)))
                     throw new IOException("文件类型与扫描记录不符");
                 using (DirectoryGuards guards = GuardParents(canonical))
-                using (SafeFileHandle handle = Open(canonical, ReadAttributes | DeleteAccess, 0, OpenReparsePoint))
+                using (SafeFileHandle handle = Open(canonical, ReadAttributes | DeleteAccess | (archiveTarget == null ? 0u : 0x80000000u), 0, OpenReparsePoint))
                 {
                     FileInformation info = ReadInfo(handle);
                     if (!Eligible(info)) throw new IOException("文件为只读/系统/链接/多重硬链接，已保留");
@@ -206,8 +238,31 @@ namespace YijianNuodong.Core
                     if (finalText.StartsWith(@"\\?\", StringComparison.Ordinal)) finalText = finalText.Substring(4);
                     if (chars == 0 || chars >= final.Capacity || !TryCanonical(finalText, out actual) || !string.Equals(actual, canonical, StringComparison.OrdinalIgnoreCase))
                         throw new IOException("文件实际路径不一致，已保留");
-                    Disposition disposition = new Disposition { Delete = true };
-                    if (!SetFileInformationByHandle(handle, 4, ref disposition, (uint)Marshal.SizeOf(typeof(Disposition)))) throw new Win32Exception(Marshal.GetLastWin32Error());
+                    if (archiveTarget != null)
+                    {
+                        using (DirectoryGuards targetGuards = GuardParents(archiveTarget))
+                        using (FileStream source = new FileStream(handle, FileAccess.Read))
+                        {
+                            using (FileStream copy = new FileStream(archiveTarget, FileMode.CreateNew, FileAccess.Write, FileShare.None)) source.CopyTo(copy);
+                            source.Position = 0;
+                            using (System.Security.Cryptography.SHA256 hash = System.Security.Cryptography.SHA256.Create())
+                            using (FileStream copy = new FileStream(archiveTarget, FileMode.Open, FileAccess.Read, FileShare.Read))
+                            {
+                                string originalHash = Convert.ToBase64String(hash.ComputeHash(source));
+                                if (copy.Length != item.SizeBytes || originalHash != Convert.ToBase64String(hash.ComputeHash(copy))) throw new IOException("归档 SHA256 校验未通过，保留源文件。");
+                                using (FileStream receipt = new FileStream(archiveTarget + ".restore.txt", FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                                using (StreamWriter writer = new StreamWriter(receipt, new UTF8Encoding(true)))
+                                    writer.WriteLine("原路径：" + canonical + "\r\n归档路径：" + archiveTarget + "\r\n字节：" + item.SizeBytes + "\r\nSHA256（Base64）：" + originalHash + "\r\n恢复：手动复制到原路径；不要覆盖既有文件。此凭据在移除源文件前写入，不能单独证明任务已完成。");
+                            }
+                            Disposition archivedDisposition = new Disposition { Delete = true };
+                            if (!SetFileInformationByHandle(handle, 4, ref archivedDisposition, (uint)Marshal.SizeOf(typeof(Disposition)))) throw new Win32Exception(Marshal.GetLastWin32Error());
+                        }
+                    }
+                    else
+                    {
+                        Disposition disposition = new Disposition { Delete = true };
+                        if (!SetFileInformationByHandle(handle, 4, ref disposition, (uint)Marshal.SizeOf(typeof(Disposition)))) throw new Win32Exception(Marshal.GetLastWin32Error());
+                    }
                 }
                 return true;
             }
@@ -219,6 +274,7 @@ namespace YijianNuodong.Core
             internal readonly List<SafeFileHandle> Handles = new List<SafeFileHandle>();
             public void Dispose() { for (int i = Handles.Count - 1; i >= 0; i--) Handles[i].Dispose(); }
         }
+        internal static IDisposable GuardPath(string path) { return GuardParents(path); }
         private static DirectoryGuards GuardParents(string file)
         {
             string canonical;

@@ -3,6 +3,7 @@ dist/
 out/
 tests/build/
 tests/_tmp/
+tests/manifest-host/
 *.exe
 *.dll
 *.pdb

@@ -1,4 +1,4 @@
-﻿# ============================================================================
+# ============================================================================
 #  一键挪动 - 逻辑自检运行器
 #  编译（含 SelfTest）为 DLL -> 字节加载 -> 反射调用 LogicTests.RunAll()
 #  用法: powershell -ExecutionPolicy Bypass -File tests\run-tests.ps1
@@ -41,7 +41,7 @@ try {
 }
 
 Write-Host $report
-if ($report -match '失败 0 项') {
+if ($report -notmatch '\[FAIL\]' -and $report -match '通过 \d+ 项 / 失败 0 项 / 跳过 \d+ 项\s*$') {
     Write-Host "逻辑自检通过。" -ForegroundColor Green
     exit 0
 } else {

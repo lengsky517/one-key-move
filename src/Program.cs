@@ -43,6 +43,25 @@ namespace YijianNuodong
                 Log.Info("命令行: " + string.Join(" ", args));
                 AppSettings.Load();
 
+#if SELFTEST
+                string selfTestReport = GetOptionValue(args, "--self-test-report");
+                if (!string.IsNullOrEmpty(selfTestReport))
+                {
+                    try
+                    {
+                        string report = SelfTest.LogicTests.RunAll();
+                        File.WriteAllText(selfTestReport, report);
+                        return report.Contains("[FAIL]") ? 1 : 0;
+                    }
+                    catch (Exception ex)
+                    {
+                        File.WriteAllText(selfTestReport, "[FAIL] 自检夹具异常：" + ex);
+                        return 1;
+                    }
+                }
+                string uiOutput = GetOptionValue(args, "--data-ui-report");
+                if (!string.IsNullOrEmpty(uiOutput)) return SelfTest.DataMoveUiTest.Run(uiOutput);
+#endif
                 // 重启后完成模式：由计划任务在开机时调用，无界面
                 string pendingJob = GetOptionValue(args, "--complete-pending");
                 if (!string.IsNullOrEmpty(pendingJob))

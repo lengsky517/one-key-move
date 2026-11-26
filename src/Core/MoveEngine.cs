@@ -405,6 +405,7 @@ namespace YijianNuodong.Core
                 string backupPath = BuildBackupPath(sourceDirectory);
                 try
                 {
+                    if (request.ReleaseDataHandles != null) request.ReleaseDataHandles();
                     Directory.Move(sourceDirectory, backupPath);
                     context.BackupDir = backupPath;
                     context.SourceRenamed = true;
@@ -420,6 +421,11 @@ namespace YijianNuodong.Core
                 if (IsCancelled(isCancelled))
                 {
                     return Canceled(result, context, progress, true);
+                }
+
+                if (request.ValidateDataTransfer != null)
+                {
+                    request.ValidateDataTransfer(backupPath, targetDirectory);
                 }
 
                 // ---------- 7. 创建目录联接 ----------
